@@ -1,0 +1,8 @@
+# Any Agent Client Protocol (ACP) agent works through the generic ACP adapter.
+name = "gemini"
+display = "Gemini CLI (ACP)"
+protocol = "acp"
+command = ["gemini", "--experimental-acp"]
+model_args = ["--model", "{model}"]
+rate_limit_pattern = "(?i)(rate.?limit|quota|429)"
+install_hint = "npm i -g @google/gemini-cli"

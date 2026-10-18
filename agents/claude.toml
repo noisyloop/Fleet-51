@@ -1,0 +1,32 @@
+# Claude Code over its structured stream-json protocol: prompts go through a pipe (no typing
+# into a TUI), and --replay-user-messages gives an explicit acknowledgement for every prompt.
+name = "claude"
+display = "Claude Code"
+protocol = "claude-stream-json"
+command = ["claude"]
+args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages"]
+resume_args = ["--resume", "{session}"]
+model_args = ["--model", "{model}"]
+account_env = "CLAUDE_CONFIG_DIR"
+account_provider = "anthropic"
+rate_limit_pattern = "(?i)(rate.?limit|usage limit|limit reached|429)"
+# Hooks are injected per session with --settings; ~/.claude/settings.json is never edited.
+overlay_args = ["--settings", "{overlay}/settings.json"]
+install_hint = "npm i -g @anthropic-ai/claude-code"
+
+[permission_args]
+default = []
+plan = ["--permission-mode", "plan"]
+auto = ["--permission-mode", "acceptEdits"]
+yolo = ["--dangerously-skip-permissions"]
+
+[[overlay]]
+path = "settings.json"
+content = '''
+{
+  "hooks": {
+    "Notification": [{"hooks": [{"type": "command", "command": "{fleet51} hook --session {id} --name notification"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "{fleet51} hook --session {id} --name stop"}]}]
+  }
+}
+'''

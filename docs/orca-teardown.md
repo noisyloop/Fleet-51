@@ -1,4 +1,4 @@
-# Orca teardown, and how Fleet beats it
+# Orca teardown, and how Fleet-51 beats it
 
 Source: `stablyai/orca` at HEAD on 2026-10-18 (v1.4.214, MIT). Evidence comes from the code
 itself plus its public issue tracker. Issue numbers below refer to `stablyai/orca`.
@@ -115,7 +115,7 @@ It ships Monaco without language intelligence, and users keep asking for the res
 - #6074 no multiple windows; #8377 no side-by-side multi-worktree view; #3099 chat-style UI requested.
 - Usage stats ignore non-git folders (#20477).
 
-## 4. Fleet: the product thesis
+## 4. Fleet-51: the product thesis
 
 > **A small, headless agent fleet manager. One daemon owns every session as an event log;
 > any client (terminal, browser, phone, desktop) is a view onto it.**
@@ -129,12 +129,12 @@ Design principles, each answering a section above:
    captured from a transcript), never a timer. *(Fixes 3.1.)*
 2. **Never touch global config.** Hooks and settings are injected per session: `--settings`
    overlays, `CLAUDE_CONFIG_DIR`/`CODEX_HOME` pointing at a session-scoped directory that layers
-   on the user's own config, env vars. Uninstalling Fleet leaves no trace. *(Fixes 3.2.)*
+   on the user's own config, env vars. Uninstalling Fleet-51 leaves no trace. *(Fixes 3.2.)*
 3. **Event-sourced sessions.** Every session is an append-only log (spawned, prompt sent, prompt
    acknowledged, tool call, permission requested, turn done, exited with code). Status, resume
    and replay are pure functions of the log. "Was this exited cleanly?" has exactly one answer,
    and a prompt is never re-sent unless the log says it was never acknowledged. *(Fixes 3.1, #14228, #10939.)*
-4. **Headless core, thin clients.** `fleetd` is one static binary with one supervisor. It runs
+4. **Headless core, thin clients.** `fleet51` is one static binary (its `daemon` subcommand is the server) with one supervisor. It runs
    on a laptop, a dev box or a VM identically. Clients: `fleet` CLI/TUI, a web UI served by the
    daemon (an installable PWA covers mobile), an optional desktop shell. Remote is the same code
    path as local. *(Fixes 3.3, 3.6.)*
@@ -144,7 +144,7 @@ Design principles, each answering a section above:
 6. **Workspace = a set of checkouts.** A workspace holds one or more checkouts, and each checkout
    is a git worktree, a jj workspace, a plain folder, or a path inside a container/VM. Multi-repo
    and monorepo subpaths are first class. *(Fixes 3.4.)*
-7. **Review, don't re-implement the IDE.** Fleet owns what IDEs lack: comparing N agent attempts,
+7. **Review, don't re-implement the IDE.** Fleet-51 owns what IDEs lack: comparing N agent attempts,
    a unified cross-repo diff, line annotations that go back to the agent as structured feedback,
    and merging the winner. For editing, it opens the user's own editor (VS Code, Cursor, Zed,
    JetBrains, `$EDITOR`) at the right checkout and line, locally or over SSH. *(Fixes 3.5.)*
@@ -164,11 +164,11 @@ Design principles, each answering a section above:
 
 ```
  ┌──────────── clients ─────────────┐
- │ fleet CLI/TUI │ Web UI/PWA │ Desktop shell (optional) │
+ │ fleet51 CLI │ Web UI/PWA │ Desktop shell (optional) │
  └───────┬───────────────┬──────────┘
          │  JSON-RPC + event stream over WebSocket / unix socket
  ┌───────▼─────────────────────────────────────────────┐
- │ fleetd                                               │
+ │ fleet51 daemon                                       │
  │  ├─ Session supervisor (event log, SQLite + files)   │
  │  ├─ Agent adapters: ACP │ Claude stream-json │ Codex │
  │  │                 app-server │ PTY+handshake        │
@@ -189,7 +189,7 @@ advantages that Orca's lifecycle bugs point to.
 
 | Phase | Scope | Proves |
 |---|---|---|
-| **0. Spike** | `fleetd` + CLI. Launch Claude Code via stream-json and Codex via `exec --json` in git worktrees. Event log, `fleet ls/run/attach/log`. | Protocol-first control works with no prompt-injection races. |
+| **0. Spike** | `fleet51` daemon + CLI. Launch Claude Code via stream-json and Codex via `exec --json` in git worktrees. Event log, `fleet51 ls/run/log`. | Protocol-first control works with no prompt-injection races. |
 | **1. MVP** | Web UI: session list with live status, terminal/chat view, diff + annotate → send feedback, fan-out one prompt to N agents and compare. Agent manifests. PTY fallback with handshake. | The core loop beats Orca on reliability. |
 | **2. Remote** | Same daemon on a remote host, token auth, PWA for phone, notifications. | Headless/server mode (#4280) and mobile without a relay. |
 | **3. Breadth** | jj and multi-repo workspaces, container isolation, accounts and failover, GitHub/GitLab/Linear task sources, open-in-editor. | The top-requested items Orca hasn't shipped. |
@@ -200,5 +200,35 @@ advantages that Orca's lifecycle bugs point to.
 - Polish and velocity: it ships daily and has a large user base.
 - Deep platform hardening on Windows and macOS (EDR, TCC, ConPTY job objects).
 
-Fleet should not chase feature parity. It should win on reliability of the core loop
+Fleet-51 should not chase feature parity. It should win on reliability of the core loop
 (launch → prompt → status → review → merge), on running headless anywhere, and on staying small.
+
+## 8. Implementation status (rough demos, all in this repo)
+
+Every principle above has a working first version. They are exercised end-to-end by
+`scripts/demo.sh` with offline mock agents that speak each real protocol.
+
+| Principle | What exists now | Where |
+|---|---|---|
+| 1. Structured protocols first | Adapters for Claude stream-json (with `--replay-user-messages` acks), Codex `exec --json`, and ACP. Terminal fallback holds prompts until a declared readiness regex matches. | `src/adapters/` |
+| 2. Never touch global config | Hooks and settings are written to `~/.fleet51/sessions/<id>/overlay/` and passed with `--settings`. Agent hooks call `fleet51 hook`. | `agents/claude.toml`, `src/session.rs` |
+| 3. Event-sourced sessions | Append-only `events.jsonl` per session; status, pending prompts and the interrupted turn are folds over it. A clean exit is never auto-resumed. Unacknowledged prompts are re-sent, and an interrupted turn is re-run exactly once. | `src/events.rs` |
+| 4. Headless core, thin clients | One binary: daemon, CLI, and an embedded web UI (installable PWA, phone layout, notifications). Token auth; `--listen 0.0.0.0:7451` for remote use. One multiplexed event stream per client. | `src/server.rs`, `ui/` |
+| 5. Crash-only lifecycle | Generation-numbered `daemon.json`. A new daemon asks the old one to suspend and exit, then resumes its sessions. After a crash, leftover agent processes are matched by `FLEET51_SESSION` and reaped. | `src/daemon.rs` |
+| 6. Workspace = set of checkouts | git worktrees, jj workspaces, plain folders (diffed through a shadow git dir), several repos at once, and monorepo subfolders. | `src/workspace.rs` |
+| 7. Review, not an IDE | Cross-repo diff, line annotations turned into one feedback prompt, fan-out comparison, merge of the winner, `fleet51 open` in your own editor. | `src/review.rs` |
+| 8. Agents are data | TOML manifests; drop one in `~/.fleet51/agents/` to add or override an agent. | `agents/`, `src/manifest.rs` |
+| 9. Isolation tiers | `none`, `docker` (host network), and `docker-offline`, with checkouts mounted at the same paths. | `src/sandbox.rs` |
+| 10. Accounts and budgets | Isolated config dir per account, `--account auto`, cooldown and failover on rate limits, usage by agent and account. | `src/accounts.rs` |
+| 11. Privacy default | No telemetry code at all. | |
+| 12. Size discipline | About 3.7k lines of Rust plus 0.6k lines of UI (Orca: about 2.2 million lines). | |
+
+Known gaps in the demo:
+
+- Only the mock agents are tested end to end. The real Claude, Codex, Gemini and OpenCode
+  manifests follow their documented flags but have not been run against those CLIs here.
+- A daemon handoff restarts agents through their resume flags instead of adopting the live
+  processes. A per-session shim that outlives the daemon would remove even that restart.
+- Container tiers need the agent binary inside the image (`sandbox_image` in the manifest).
+- The PID liveness and reaping checks use `/proc`, so they are Linux-only for now.
+- Merge is implemented for git checkouts only.
