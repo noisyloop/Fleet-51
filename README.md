@@ -65,6 +65,12 @@ against LM Studio, vLLM, llama.cpp server or OpenRouter (set `OPENAI_BASE_URL`, 
 `OPENAI_API_KEY` if needed). The model must support tool calling. Small local models are much
 weaker than hosted ones, so compare several and review before merging.
 
+- Reasoning models such as qwen3 have thinking turned off by default on Ollama. In testing that
+  made replies about 50 times faster on CPU. Pass `--think` in a custom manifest to turn it back on.
+- Models without native tool calling (for example the dolphin family) still work. The agent
+  notices, then asks the model to write each tool call as a JSON object in its reply. You can force
+  this with `--tool-mode text`. It is less reliable than native tool calling.
+
 ## Use it
 
 ```bash
@@ -130,8 +136,9 @@ per-session config overlays, account directories and sandbox images.
 
 ## Status
 
-This is a rough demo. The mock agents run end to end. The Ollama agent has run against real
-qwen3 models on CPU, but no real task has been fixed and tested yet: qwen3:1.7b made genuine tool
-calls and edits, but its fix was wrong and it was stopped after 10 minutes. The built-in manifests for
+This is a rough demo. The mock agents run end to end. With Ollama on a 4-core CPU and no GPU,
+qwen3:1.7b fixed a real failing test in 49 seconds: it read the file, edited it and ran the test.
+qwen3:0.6b was faster but claimed success on a test that still failed. Expect small local models
+to need several attempts, which is what fan-out and compare are for.
 real agents follow their documented flags but are untested here. Known gaps are listed at the
 end of [`docs/orca-teardown.md`](docs/orca-teardown.md).

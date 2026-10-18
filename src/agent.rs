@@ -22,6 +22,10 @@ pub struct Opts {
     pub state_dir: Option<PathBuf>,
     pub replay: bool,
     pub max_steps: usize,
+    /// Let reasoning models think before answering (much slower on small local hardware).
+    pub think: bool,
+    /// native | text | auto (native, falling back to text for models without tool calling)
+    pub tool_mode: String,
 }
 
 fn out(v: Value) {
@@ -58,6 +62,7 @@ struct Endpoint {
     url: String,
     key: Option<String>,
     model: String,
+    no_think: bool,
 }
 
 fn endpoint(o: &Opts) -> Result<Endpoint> {
@@ -88,6 +93,8 @@ fn endpoint(o: &Opts) -> Result<Endpoint> {
         url: format!("{}/chat/completions", base.trim_end_matches('/')),
         key,
         model,
+        // Ollama maps reasoning_effort "none" to think=false; other servers may reject it.
+        no_think: o.provider == "ollama" && !o.think,
     })
 }
 
@@ -362,7 +369,49 @@ fn strip_think(s: &str) -> String {
     out.trim().to_string()
 }
 
-fn chat(ep: &Endpoint, messages: &[Value], tools: &Value) -> Result<Value> {
+/// For models without native tool calling: describe the tools and ask for a JSON object.
+fn text_tools_prompt(tools: &Value) -> String {
+    let mut s = String::from(
+        "\n\nTo use a tool, reply with ONLY one JSON object and nothing else, for example:\n\
+         {\"tool\": \"read_file\", \"args\": {\"path\": \"README.md\"}}\n\
+         You will get the result in the next message. Use one tool per reply. When you are done, \
+         reply with a short plain-text summary and no JSON.\nTools:",
+    );
+    for t in tools.as_array().into_iter().flatten() {
+        let f = &t["function"];
+        let params: Vec<String> = f["parameters"]["properties"]
+            .as_object()
+            .map(|p| p.keys().cloned().collect())
+            .unwrap_or_default();
+        s.push_str(&format!(
+            "\n- {}({}): {}",
+            f["name"].as_str().unwrap_or(""),
+            params.join(", "),
+            f["description"].as_str().unwrap_or("")
+        ));
+    }
+    s
+}
+
+/// Find the first JSON object with a "tool" field anywhere in a reply (fenced or not).
+fn parse_text_call(content: &str) -> Option<(String, Value)> {
+    for (i, _) in content.match_indices('{') {
+        let mut it = serde_json::Deserializer::from_str(&content[i..]).into_iter::<Value>();
+        if let Some(Ok(v)) = it.next() {
+            if let Some(name) = v["tool"].as_str().or(v["name"].as_str()) {
+                let args = v
+                    .get("args")
+                    .or(v.get("arguments"))
+                    .cloned()
+                    .unwrap_or(json!({}));
+                return Some((name.to_string(), args));
+            }
+        }
+    }
+    None
+}
+
+fn chat(ep: &Endpoint, messages: &[Value], tools: Option<&Value>) -> Result<Value> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(900)))
@@ -374,10 +423,15 @@ fn chat(ep: &Endpoint, messages: &[Value], tools: &Value) -> Result<Value> {
     if let Some(k) = &ep.key {
         req = req.header("Authorization", &format!("Bearer {k}"));
     }
+    let mut body = json!({"model": ep.model, "messages": messages, "stream": false});
+    if let Some(t) = tools {
+        body["tools"] = t.clone();
+    }
+    if ep.no_think {
+        body["reasoning_effort"] = json!("none");
+    }
     let mut resp = req
-        .send_json(
-            json!({"model": ep.model, "messages": messages, "tools": tools, "stream": false}),
-        )
+        .send_json(body)
         .with_context(|| format!("cannot reach the model server at {}", ep.url))?;
     let status = resp.status();
     let body: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
@@ -389,6 +443,15 @@ fn chat(ep: &Endpoint, messages: &[Value], tools: &Value) -> Result<Value> {
         bail!("{} {}: {msg}", status.as_u16(), ep.model);
     }
     Ok(body)
+}
+
+fn enter_text_mode(messages: &mut [Value], tools: &Value) {
+    if let Some(sys) = messages.first_mut() {
+        let text = sys["content"].as_str().unwrap_or_default().to_string();
+        if !text.contains("To use a tool, reply with ONLY") {
+            sys["content"] = json!(text + &text_tools_prompt(tools));
+        }
+    }
 }
 
 fn state_file(o: &Opts, id: &str) -> Option<PathBuf> {
@@ -409,6 +472,10 @@ pub fn run(o: Opts) -> Result<()> {
             vec![json!({"role": "system", "content": system_prompt(&o.permission)})]
         });
     let tools = tools(&o.permission);
+    let mut text_mode = o.tool_mode == "text";
+    if text_mode {
+        enter_text_mode(&mut messages, &tools);
+    }
     let mut ep: Option<Endpoint> = None;
     let mut started = false;
 
@@ -457,7 +524,22 @@ pub fn run(o: Opts) -> Result<()> {
         let mut last = String::new();
         let mut error: Option<String> = None;
         for step in 0..o.max_steps {
-            let body = match chat(ep, &messages, &tools) {
+            let mut reply = chat(ep, &messages, (!text_mode).then_some(&tools));
+            if let Err(e) = &reply {
+                if !text_mode
+                    && o.tool_mode == "auto"
+                    && e.to_string().contains("does not support tools")
+                {
+                    eprintln!(
+                        "{} has no native tool calling; switching to JSON tool calls in text",
+                        ep.model
+                    );
+                    text_mode = true;
+                    enter_text_mode(&mut messages, &tools);
+                    reply = chat(ep, &messages, None);
+                }
+            }
+            let body = match reply {
                 Ok(b) => b,
                 Err(e) => {
                     error = Some(e.to_string());
@@ -468,18 +550,39 @@ pub fn run(o: Opts) -> Result<()> {
             tout += body["usage"]["completion_tokens"].as_u64().unwrap_or(0);
             let m = &body["choices"][0]["message"];
             let content = strip_think(m["content"].as_str().unwrap_or_default());
-            let calls = m["tool_calls"].as_array().cloned().unwrap_or_default();
+            let mut calls = m["tool_calls"].as_array().cloned().unwrap_or_default();
+            let text_call = if text_mode {
+                parse_text_call(&content)
+            } else {
+                None
+            };
+            if let Some((name, args)) = &text_call {
+                calls = vec![
+                    json!({"id": format!("call_{step}"), "function": {"name": name, "arguments": args}}),
+                ];
+            }
+            // A JSON tool call is not prose; do not show it as the agent's message.
+            let content = if text_call.is_some() {
+                String::new()
+            } else {
+                content
+            };
             if !content.is_empty() {
                 last = content.clone();
                 out(
                     json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [{"type": "text", "text": content}]}}),
                 );
             }
-            let mut assistant = json!({"role": "assistant", "content": content});
-            if !calls.is_empty() {
-                assistant["tool_calls"] = json!(calls);
+            if text_mode {
+                let raw = m["content"].as_str().unwrap_or_default();
+                messages.push(json!({"role": "assistant", "content": raw}));
+            } else {
+                let mut assistant = json!({"role": "assistant", "content": content});
+                if !calls.is_empty() {
+                    assistant["tool_calls"] = json!(calls);
+                }
+                messages.push(assistant);
             }
-            messages.push(assistant);
             if calls.is_empty() {
                 break;
             }
@@ -501,9 +604,15 @@ pub fn run(o: Opts) -> Result<()> {
                 out(
                     json!({"type": "user", "session_id": session, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": clip(result.clone())}]}}),
                 );
-                messages.push(
-                    json!({"role": "tool", "tool_call_id": id, "name": name, "content": result}),
-                );
+                if text_mode {
+                    messages.push(
+                        json!({"role": "user", "content": format!("Result of {name}:\n{result}")}),
+                    );
+                } else {
+                    messages.push(
+                        json!({"role": "tool", "tool_call_id": id, "name": name, "content": result}),
+                    );
+                }
             }
             if step + 1 == o.max_steps {
                 last = format!("stopped after {} steps", o.max_steps);
@@ -539,6 +648,17 @@ mod tests {
             PathBuf::from("src/main.rs")
         );
         assert_eq!(safe_path("").unwrap(), PathBuf::from("."));
+    }
+
+    #[test]
+    fn text_tool_calls_are_found_in_prose_and_fences() {
+        let (n, a) = parse_text_call(
+            "Sure.\n```json\n{\"tool\": \"read_file\", \"args\": {\"path\": \"a.py\"}}\n```",
+        )
+        .unwrap();
+        assert_eq!(n, "read_file");
+        assert_eq!(a["path"], "a.py");
+        assert!(parse_text_call("All done, the test passes.").is_none());
     }
 
     #[test]

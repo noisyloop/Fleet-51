@@ -225,9 +225,9 @@ Every principle above has a working first version. They are exercised end-to-end
 
 Known gaps in the demo:
 
-- The Ollama agent has run against real qwen3 models (0.6B and 1.7B on CPU). It makes real tool
-  calls, but these small models were slow and their fixes poor; the model, not the plumbing,
-  is the limit there.
+- The Ollama agent has run against real qwen3 models (0.6B and 1.7B on CPU). With thinking off,
+  qwen3:1.7b fixed and verified a failing test in 49 seconds. The smaller model and the
+  text-mode fallback ran correctly as plumbing, but produced wrong fixes.
 - Apart from that, only the mock agents are tested end to end. The real Claude, Codex, Gemini and OpenCode
   manifests follow their documented flags but have not been run against those CLIs here.
 - A daemon handoff restarts agents through their resume flags instead of adopting the live

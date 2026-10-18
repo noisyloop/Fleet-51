@@ -185,6 +185,10 @@ enum Cmd {
         replay_user_messages: bool,
         #[arg(long, default_value_t = 30)]
         max_steps: usize,
+        #[arg(long)]
+        think: bool,
+        #[arg(long, default_value = "auto")]
+        tool_mode: String,
     },
     /// Offline agent that speaks a real protocol (claude | codex | acp | pty)
     #[command(hide = true)]
@@ -259,6 +263,8 @@ fn real_main() -> Result<()> {
             state_dir,
             replay_user_messages,
             max_steps,
+            think,
+            tool_mode,
         } => agent::run(agent::Opts {
             provider,
             base_url,
@@ -268,6 +274,8 @@ fn real_main() -> Result<()> {
             state_dir,
             replay: replay_user_messages,
             max_steps,
+            think,
+            tool_mode,
         }),
         Cmd::Models => {
             for m in agent::ollama_models()? {
