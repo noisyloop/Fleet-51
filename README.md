@@ -1,12 +1,26 @@
 # Fleet-51
 
-Run a fleet of coding agents (Claude Code, Codex, Ollama, any ACP agent, or any terminal agent) from
-one small headless daemon. Watch them side by side in a browser or on your phone, review their
-diffs, send line comments back as feedback, and merge the winner.
+Create your own AI bots and run them all at once, privately on your own computer, with free
+local models. Give each bot a name, a shape and a colour, pick its model from the chat window,
+and keep chatting with one while the others work.
 
-Fleet-51 started as a teardown of [Orca](https://github.com/stablyai/orca). That analysis, and
-what Fleet-51 does differently, is in [`docs/orca-teardown.md`](docs/orca-teardown.md). This is
-an early, rough demo.
+On first launch Fleet-51 sets itself up: it finds Ollama (or downloads a pinned, checksum-verified
+copy on a Mac), downloads a small default model (qwen3:1.7b) and creates your first bot. Nothing
+to configure.
+
+![Bots chatting](docs/screenshots/bots.png)
+
+| Create a bot | Phone |
+|---|---|
+| ![Create New Bot](docs/screenshots/new-bot.png) | ![Bots on a phone](docs/screenshots/phone-bots.png) |
+
+Under the hood it is a headless daemon that can also drive coding agents (Claude Code, Codex, any
+ACP agent) across git repos, with diff review and fan-out comparison. That developer view is at
+**Advanced** in the app (`/advanced`). Fleet-51 started as a teardown of
+[Orca](https://github.com/stablyai/orca); see [`docs/orca-teardown.md`](docs/orca-teardown.md).
+This is an early, rough demo.
+
+<details><summary>Developer view screenshots</summary>
 
 ![Six agents working side by side](docs/screenshots/side-by-side.png)
 
@@ -14,6 +28,7 @@ an early, rough demo.
 |---|---|---|
 | ![Comparing fan-out attempts](docs/screenshots/compare.png) | ![Reviewing a diff with line comments](docs/screenshots/review.png) | ![Phone layout](docs/screenshots/phone.png) |
 
+</details>
 
 ## Install on a Mac (no Rust needed)
 
@@ -26,8 +41,9 @@ Every push builds a universal macOS app (Apple Silicon and Intel) in GitHub Acti
 3. The app is not signed by Apple yet, so the first launch needs right-click › **Open** › **Open**
    (or `xattr -dr com.apple.quarantine /Applications/Fleet-51.app`).
 4. Fleet-51 opens in its own window, and starts the background daemon if it isn't running.
-   Closing the window leaves agents running; **Quit and Stop Agents** (⌥⌘Q) stops everything. For free local
-   models, install [Ollama](https://ollama.com) and use the **Models** panel.
+   Closing the window leaves agents running; **Quit and Stop Agents** (⌥⌘Q) stops everything.
+   The first launch downloads the model engine (Ollama, about 175 MB) and a first model (about
+   1.4 GB), then opens your first bot. More free models are in **Models** or the model menu.
 
 Windows and Linux packages are planned; on Linux, build from source as below.
 

@@ -14,8 +14,10 @@ Fleet-51 for macOS
    View > Open in Browser shows the same UI in a browser tab, e.g. to use it
    from another device.
 
-Local models (free): install Ollama from https://ollama.com, then use the Models
-panel in the web UI to download one, e.g. qwen3:1.7b or tinydolphin.
+First launch sets everything up: it downloads the model engine (Ollama, ~175 MB,
+checked against a SHA-256 built into Fleet-51) and a first model (qwen3:1.7b,
+~1.4 GB), then opens your first bot. If you already run Ollama, that is used.
+Get more free models from the model menu in a chat, or the Models button.
 
 Command line (optional):
 

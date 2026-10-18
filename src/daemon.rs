@@ -44,6 +44,26 @@ pub struct Daemon {
     pub stop: Notify,
     /// Model downloads in progress or recently finished, by model name.
     pub pulls: std::sync::Mutex<HashMap<String, crate::models::Pull>>,
+    /// Where local models run, and the Ollama process Fleet-51 started, if any.
+    pub runtime: std::sync::Mutex<crate::runtime::Runtime>,
+    pub ollama: std::sync::Mutex<Option<std::process::Child>>,
+}
+
+pub const BOT_SHAPES: &[&str] = &[
+    "circle", "cloud", "squircle", "sparkle", "flower", "clover", "pebble", "star", "drop", "gem",
+    "blossom", "burst", "pillow",
+];
+pub const BOT_COLORS: &[&str] = &[
+    "white", "brown", "red", "orange", "amber", "green", "teal", "blue", "purple", "pink", "gray",
+];
+
+/// Where bots keep their files: ~/Fleet-51/<bot name> (FLEET51_BOTS_DIR overrides).
+fn bots_root() -> PathBuf {
+    std::env::var_os("FLEET51_BOTS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into())).join("Fleet-51")
+        })
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -337,6 +357,153 @@ impl Daemon {
         Ok(())
     }
 
+    /// Find or set up Ollama in the background, then make sure there is a model and a bot.
+    pub fn start_runtime(self: Arc<Self>) {
+        if std::env::var_os("FLEET51_NO_RUNTIME").is_some() {
+            *self.runtime.lock().unwrap() = crate::runtime::Runtime::Failed {
+                message: "model engine disabled (FLEET51_NO_RUNTIME)".into(),
+            };
+            return;
+        }
+        tokio::task::spawn_blocking(move || {
+            let d = self.clone();
+            let report = move |r: crate::runtime::Runtime| {
+                *d.runtime.lock().unwrap() = r.clone();
+                let _ = d.global.send(Live::Runtime(r));
+            };
+            match crate::runtime::ensure(&self.home, &report) {
+                Ok(child) => {
+                    *self.ollama.lock().unwrap() = child;
+                    let installed = crate::agent::ollama_models().unwrap_or_default();
+                    if installed.is_empty() {
+                        let _ = self.pull_model(crate::runtime::DEFAULT_MODEL);
+                    }
+                    if self.bots().is_empty() {
+                        if let Err(e) = self.create_bot("Fleet", "cloud", "blue") {
+                            eprintln!("fleet51: could not create the first bot: {e:#}");
+                        }
+                    }
+                }
+                Err(e) => report(crate::runtime::Runtime::Failed {
+                    message: format!("{e:#}"),
+                }),
+            }
+        });
+    }
+
+    /// The model new bots use: the default if installed (or nothing is), else the first installed.
+    pub fn default_model(&self) -> String {
+        let installed = crate::agent::ollama_models().unwrap_or_default();
+        let d = crate::runtime::DEFAULT_MODEL;
+        if installed.is_empty() || installed.iter().any(|m| m == d) {
+            d.to_string()
+        } else {
+            installed[0].clone()
+        }
+    }
+
+    pub fn bots(&self) -> Vec<Arc<Session>> {
+        let mut v: Vec<_> = self
+            .all_sessions()
+            .into_iter()
+            .filter(|s| {
+                let st = s.state();
+                st.profile.is_some() && !st.archived
+            })
+            .collect();
+        v.sort_by_key(|s| std::cmp::Reverse(s.state().created));
+        v
+    }
+
+    /// A bot is a long-lived chat session on the local model, with its own folder.
+    pub fn create_bot(
+        self: &Arc<Self>,
+        name: &str,
+        shape: &str,
+        color: &str,
+    ) -> Result<Arc<Session>> {
+        let name = name.trim();
+        if name.is_empty() || name.len() > 60 {
+            bail!("give the bot a name (up to 60 characters)");
+        }
+        let shape = if BOT_SHAPES.contains(&shape) {
+            shape
+        } else {
+            BOT_SHAPES[0]
+        };
+        let color = if BOT_COLORS.contains(&color) {
+            color
+        } else {
+            "blue"
+        };
+        let slug: String = name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let slug = slug.trim().trim_matches('.').to_string();
+        let base = bots_root();
+        let mut folder = base.join(if slug.is_empty() {
+            "bot"
+        } else {
+            slug.as_str()
+        });
+        let mut n = 2;
+        while folder.exists() {
+            folder = base.join(format!("{slug} {n}"));
+            n += 1;
+        }
+        std::fs::create_dir_all(&folder)?;
+        let s = self.create_session(NewSession {
+            agent: "bot".into(),
+            repos: vec![RepoSpec {
+                path: folder.display().to_string(),
+                kind: Some("folder".into()),
+            }],
+            title: Some(name.to_string()),
+            model: Some(self.default_model()),
+            permission: Some("auto".into()),
+            ..Default::default()
+        })?;
+        s.emit(Ev::Profile {
+            name: name.into(),
+            shape: shape.into(),
+            color: color.into(),
+        });
+        Ok(s)
+    }
+
+    /// Switch a bot's model. A running agent restarts on the new model and keeps its conversation.
+    pub async fn set_model(self: &Arc<Self>, s: &Arc<Session>, model: &str) -> Result<()> {
+        if !crate::models::valid_name(model) {
+            bail!("not a valid model name: {model}");
+        }
+        s.emit(Ev::ModelChanged {
+            model: model.into(),
+        });
+        if s.is_running() {
+            s.send(Cmd::Suspend);
+            for _ in 0..100 {
+                if !s.is_running() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            session::start(self.clone(), s.clone(), s.state().provider_session);
+        }
+        Ok(())
+    }
+
+    pub fn archive(&self, s: &Arc<Session>) {
+        s.emit(Ev::Archived);
+        self.stop(s);
+    }
+
     pub async fn suspend_all(&self) {
         let running: Vec<_> = self
             .all_sessions()
@@ -420,6 +587,8 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
         global,
         stop: Notify::new(),
         pulls: std::sync::Mutex::new(HashMap::new()),
+        runtime: std::sync::Mutex::new(crate::runtime::Runtime::Checking),
+        ollama: std::sync::Mutex::new(None),
     });
 
     // Recover sessions from their logs.
@@ -472,11 +641,16 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
     if resumed > 0 {
         println!("Resumed {resumed} interrupted session(s)");
     }
+    d.clone().start_runtime();
     let app = crate::server::router(d.clone());
     let d2 = d.clone();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move { d2.stop.notified().await })
         .await?;
+    if let Some(mut child) = d.ollama.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     if read_info(&home).is_some_and(|i| i.pid == std::process::id()) {
         let _ = std::fs::remove_file(home.daemon_file());
     }

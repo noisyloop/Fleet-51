@@ -51,6 +51,12 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/health", get(health))
         .route("/api/agents", get(agents))
         .route("/api/models", get(models))
+        .route("/api/runtime", get(runtime))
+        .route("/api/runtime/retry", post(runtime_retry))
+        .route("/api/bots", get(list_bots).post(create_bot))
+        .route("/api/bots/{id}/model", post(bot_model))
+        .route("/api/bots/{id}/delete", post(bot_delete))
+        .route("/api/bots/{id}/reveal", post(bot_reveal))
         .route("/api/models/pull", post(pull_model))
         .route("/api/models/delete", post(delete_model))
         .route(
@@ -85,6 +91,19 @@ pub fn router(d: Arc<Daemon>) -> Router {
     Router::new()
         .route(
             "/",
+            get(|| async { asset("text/html; charset=utf-8", include_str!("../ui/chat.html")) }),
+        )
+        .route(
+            "/chat.js",
+            get(|| async { asset("text/javascript", include_str!("../ui/chat.js")) }),
+        )
+        .route(
+            "/chat.css",
+            get(|| async { asset("text/css", include_str!("../ui/chat.css")) }),
+        )
+        // The original developer view: repos, diffs, fan-out, accounts.
+        .route(
+            "/advanced",
             get(|| async { asset("text/html; charset=utf-8", include_str!("../ui/index.html")) }),
         )
         .route(
@@ -169,6 +188,84 @@ async fn agents(State(d): D) -> Json<Value> {
         })
         .collect();
     Json(json!(list))
+}
+
+async fn runtime(State(d): D) -> Json<Value> {
+    let r = d.runtime.lock().unwrap().clone();
+    Json(
+        json!({"runtime": r, "default_model": crate::runtime::DEFAULT_MODEL, "shapes": crate::daemon::BOT_SHAPES, "colors": crate::daemon::BOT_COLORS}),
+    )
+}
+
+async fn runtime_retry(State(d): D) -> Json<Value> {
+    d.clone().start_runtime();
+    Json(json!({"ok": true}))
+}
+
+fn bot_json(s: &crate::session::Session) -> Value {
+    let st = s.state();
+    let p = st.profile.clone();
+    json!({
+        "id": st.id, "name": p.as_ref().map(|p| p.name.clone()).unwrap_or(st.title.clone()),
+        "shape": p.as_ref().map(|p| p.shape.clone()), "color": p.as_ref().map(|p| p.color.clone()),
+        "model": st.model, "folder": st.cwd, "status": st.status, "preview": st.last_text,
+        "pending": st.pending.len(), "updated": st.updated, "created": st.created,
+    })
+}
+
+async fn list_bots(State(d): D) -> Json<Value> {
+    Json(json!(d
+        .bots()
+        .iter()
+        .map(|s| bot_json(s))
+        .collect::<Vec<_>>()))
+}
+
+#[derive(Deserialize)]
+struct NewBot {
+    name: String,
+    #[serde(default)]
+    shape: String,
+    #[serde(default)]
+    color: String,
+}
+
+async fn create_bot(State(d): D, Json(b): Json<NewBot>) -> R<Value> {
+    let d2 = d.clone();
+    let s =
+        tokio::task::spawn_blocking(move || d2.create_bot(&b.name, &b.shape, &b.color)).await??;
+    Ok(Json(bot_json(&s)))
+}
+
+#[derive(Deserialize)]
+struct BotModel {
+    model: String,
+}
+
+async fn bot_model(State(d): D, Path(id): Path<String>, Json(m): Json<BotModel>) -> R<Value> {
+    let s = d.session(&id)?;
+    d.set_model(&s, m.model.trim()).await?;
+    Ok(Json(bot_json(&s)))
+}
+
+async fn bot_delete(State(d): D, Path(id): Path<String>) -> R<Value> {
+    let s = d.session(&id)?;
+    d.archive(&s);
+    Ok(Json(json!({"archived": s.id})))
+}
+
+/// Show the bot's folder in Finder (or the Linux file manager).
+async fn bot_reveal(State(d): D, Path(id): Path<String>) -> R<Value> {
+    let s = d.session(&id)?;
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(s.state().cwd)
+        .spawn()?;
+    Ok(Json(json!({"ok": true})))
 }
 
 async fn models(State(d): D) -> Json<Value> {

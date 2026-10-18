@@ -26,6 +26,8 @@ pub struct Opts {
     pub think: bool,
     /// native | text | auto (native, falling back to text for models without tool calling)
     pub tool_mode: String,
+    /// coder (works on a project) or assistant (a general chat bot with its own folder)
+    pub persona: String,
 }
 
 fn out(v: Value) {
@@ -36,6 +38,9 @@ fn out(v: Value) {
 
 /// Ollama's own OLLAMA_HOST convention: "host:port" or a full URL.
 pub fn ollama_root() -> String {
+    if let Some(root) = crate::runtime::root() {
+        return root;
+    }
     let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "127.0.0.1:11434".into());
     let host = if host.starts_with("http") {
         host
@@ -141,10 +146,18 @@ fn tools(permission: &str) -> Value {
     json!(t)
 }
 
-fn system_prompt(permission: &str) -> String {
+fn system_prompt(permission: &str, persona: &str) -> String {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
+    if persona == "assistant" {
+        return format!(
+            "You are a helpful assistant running privately on the user's own computer. You have a \
+             working folder at {cwd} with tools to read, create and edit files and run commands in it. \
+             Use the tools only when a request needs them; for ordinary questions and conversation, \
+             just answer. Be clear and concise."
+        );
+    }
     let mode = if permission == "plan" {
         "You are in read-only planning mode: inspect the code and propose a plan; do not change files."
     } else {
@@ -469,7 +482,7 @@ pub fn run(o: Opts) -> Result<()> {
         .and_then(|f| std::fs::read_to_string(f).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| {
-            vec![json!({"role": "system", "content": system_prompt(&o.permission)})]
+            vec![json!({"role": "system", "content": system_prompt(&o.permission, &o.persona)})]
         });
     let tools = tools(&o.permission);
     let mut text_mode = o.tool_mode == "text";

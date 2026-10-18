@@ -82,7 +82,7 @@ impl Session {
             event: event.clone(),
         });
         if !matches!(event.ev, Ev::Output { .. }) {
-            let _ = self.global.send(Live::State(state));
+            let _ = self.global.send(Live::State(Box::new(state)));
         }
         event
     }
@@ -378,6 +378,10 @@ fn build_spec(
         ("FLEET51_URL".into(), d.url.clone()),
         ("FLEET51_TOKEN".into(), d.token.clone()),
     ];
+    // Agents talk to whichever Ollama the daemon settled on (system or managed).
+    if let Some(root) = crate::runtime::root() {
+        env.push(("OLLAMA_HOST".into(), root));
+    }
     for (k, v) in &m.env {
         env.push((k.clone(), expand(v, &vars)));
     }
