@@ -19,14 +19,23 @@ impl Client {
     pub fn new(home: &Home) -> Result<Client> {
         let base = match std::env::var("FLEET51_URL") {
             Ok(u) => u,
-            Err(_) => read_info(home).map(|i| i.url).context("Fleet-51 daemon is not running (start it with `fleet51 up`)")?,
+            Err(_) => read_info(home)
+                .map(|i| i.url)
+                .context("Fleet-51 daemon is not running (start it with `fleet51 up`)")?,
         };
         let token = match std::env::var("FLEET51_TOKEN") {
             Ok(t) => t,
             Err(_) => home.token()?,
         };
-        let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
-        Ok(Client { base: base.trim_end_matches('/').to_string(), token, agent })
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        Ok(Client {
+            base: base.trim_end_matches('/').to_string(),
+            token,
+            agent,
+        })
     }
 
     fn auth(&self) -> String {
@@ -43,23 +52,42 @@ impl Client {
     }
 
     pub fn get(&self, path: &str) -> Result<Value> {
-        let resp = self.agent.get(&format!("{}{path}", self.base)).header("Authorization", &self.auth()).call().context("contacting daemon")?;
+        let resp = self
+            .agent
+            .get(&format!("{}{path}", self.base))
+            .header("Authorization", &self.auth())
+            .call()
+            .context("contacting daemon")?;
         Self::finish(resp)
     }
 
     pub fn post(&self, path: &str, body: Value) -> Result<Value> {
-        let resp = self.agent.post(&format!("{}{path}", self.base)).header("Authorization", &self.auth()).send_json(&body).context("contacting daemon")?;
+        let resp = self
+            .agent
+            .post(&format!("{}{path}", self.base))
+            .header("Authorization", &self.auth())
+            .send_json(&body)
+            .context("contacting daemon")?;
         Self::finish(resp)
     }
 
     pub fn delete(&self, path: &str) -> Result<Value> {
-        let resp = self.agent.delete(&format!("{}{path}", self.base)).header("Authorization", &self.auth()).call().context("contacting daemon")?;
+        let resp = self
+            .agent
+            .delete(&format!("{}{path}", self.base))
+            .header("Authorization", &self.auth())
+            .call()
+            .context("contacting daemon")?;
         Self::finish(resp)
     }
 
     /// Read a server-sent event stream; `f` returns false to stop.
     pub fn stream(&self, path: &str, mut f: impl FnMut(Value) -> bool) -> Result<()> {
-        let resp = self.agent.get(&format!("{}{path}", self.base)).header("Authorization", &self.auth()).call()?;
+        let resp = self
+            .agent
+            .get(&format!("{}{path}", self.base))
+            .header("Authorization", &self.auth())
+            .call()?;
         if !resp.status().is_success() {
             return Self::finish(resp).map(|_| ());
         }

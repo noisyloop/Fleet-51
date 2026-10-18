@@ -38,7 +38,10 @@ impl Session {
     pub fn open(dir: PathBuf, id: &str, global: broadcast::Sender<Live>) -> Result<Arc<Session>> {
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("events.jsonl");
-        let mut state = State { id: id.to_string(), ..Default::default() };
+        let mut state = State {
+            id: id.to_string(),
+            ..Default::default()
+        };
         if let Ok(f) = File::open(&path) {
             for line in BufReader::new(f).lines().map_while(Result::ok) {
                 if let Ok(e) = serde_json::from_str::<Event>(&line) {
@@ -62,7 +65,11 @@ impl Session {
     pub fn emit(&self, ev: Ev) -> Event {
         let (event, state) = {
             let mut g = self.inner.lock().unwrap();
-            let e = Event { seq: g.state.last_seq + 1, ts: now_ms(), ev };
+            let e = Event {
+                seq: g.state.last_seq + 1,
+                ts: now_ms(),
+                ev,
+            };
             if let Ok(line) = serde_json::to_string(&e) {
                 let _ = writeln!(g.file, "{line}");
             }
@@ -70,7 +77,10 @@ impl Session {
             (e, g.state.clone())
         };
         let _ = self.tx.send(event.clone());
-        let _ = self.global.send(Live::Event { session: self.id.clone(), event: event.clone() });
+        let _ = self.global.send(Live::Event {
+            session: self.id.clone(),
+            event: event.clone(),
+        });
         if !matches!(event.ev, Ev::Output { .. }) {
             let _ = self.global.send(Live::State(state));
         }
@@ -78,7 +88,10 @@ impl Session {
     }
 
     pub fn emit_tool(&self, name: &str, input: Value) {
-        self.emit(Ev::ToolCall { name: name.to_string(), input });
+        self.emit(Ev::ToolCall {
+            name: name.to_string(),
+            input,
+        });
     }
 
     pub fn state(&self) -> State {
@@ -90,7 +103,9 @@ impl Session {
     }
 
     pub fn history(&self, since: u64) -> Vec<Event> {
-        let Ok(f) = File::open(self.dir.join("events.jsonl")) else { return vec![] };
+        let Ok(f) = File::open(self.dir.join("events.jsonl")) else {
+            return vec![];
+        };
         BufReader::new(f)
             .lines()
             .map_while(Result::ok)
@@ -100,7 +115,11 @@ impl Session {
     }
 
     pub fn send(&self, c: Cmd) -> bool {
-        self.cmd.lock().unwrap().as_ref().is_some_and(|tx| tx.send(c).is_ok())
+        self.cmd
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|tx| tx.send(c).is_ok())
     }
 
     /// Queue a prompt. Holding the command lock while appending means a concurrent (re)spawn
@@ -108,8 +127,17 @@ impl Session {
     pub fn queue_prompt(&self, text: &str) -> (String, bool) {
         let guard = self.cmd.lock().unwrap();
         let id = short_id("p");
-        self.emit(Ev::PromptQueued { id: id.clone(), text: text.to_string() });
-        let live = guard.as_ref().is_some_and(|tx| tx.send(Cmd::Prompt { id: id.clone(), text: text.to_string() }).is_ok());
+        self.emit(Ev::PromptQueued {
+            id: id.clone(),
+            text: text.to_string(),
+        });
+        let live = guard.as_ref().is_some_and(|tx| {
+            tx.send(Cmd::Prompt {
+                id: id.clone(),
+                text: text.to_string(),
+            })
+            .is_ok()
+        });
         (id, live)
     }
 
@@ -123,7 +151,10 @@ impl Session {
             });
         }
         for p in st.pending {
-            let _ = tx.send(Cmd::Prompt { id: p.id, text: p.text });
+            let _ = tx.send(Cmd::Prompt {
+                id: p.id,
+                text: p.text,
+            });
         }
         *guard = Some(tx);
     }
@@ -146,20 +177,32 @@ pub fn start(d: Arc<Daemon>, s: Arc<Session>, resume: Option<String>) {
 
 fn requeue_interrupted(s: &Session, why: &str) {
     if let Some(text) = s.state().open_turn {
-        s.emit(Ev::Note { level: "info".into(), message: format!("{why}: re-running the unfinished turn once") });
+        s.emit(Ev::Note {
+            level: "info".into(),
+            message: format!("{why}: re-running the unfinished turn once"),
+        });
         s.queue_prompt(&text);
     }
 }
 
 async fn supervise(d: &Arc<Daemon>, s: &Arc<Session>, mut resume: Option<String>) {
-    if matches!(s.state().status, Status::Orphaned | Status::Suspended | Status::Failed) {
+    if matches!(
+        s.state().status,
+        Status::Orphaned | Status::Suspended | Status::Failed
+    ) {
         requeue_interrupted(s, "previous process ended mid-turn");
     }
     loop {
         let st = s.state();
         let Some(m) = d.manifest(&st.agent) else {
-            s.emit(Ev::Note { level: "error".into(), message: format!("no agent manifest named {}", st.agent) });
-            s.emit(Ev::Exited { code: None, clean: false });
+            s.emit(Ev::Note {
+                level: "error".into(),
+                message: format!("no agent manifest named {}", st.agent),
+            });
+            s.emit(Ev::Exited {
+                code: None,
+                clean: false,
+            });
             return;
         };
         let provider = m.provider();
@@ -167,7 +210,12 @@ async fn supervise(d: &Arc<Daemon>, s: &Arc<Session>, mut resume: Option<String>
             Some("auto") => {
                 let a = accounts::pick(&d.home, &provider, None);
                 if a.is_none() {
-                    s.emit(Ev::Note { level: "info".into(), message: format!("no {provider} accounts configured; using the agent's default login") });
+                    s.emit(Ev::Note {
+                        level: "info".into(),
+                        message: format!(
+                            "no {provider} accounts configured; using the agent's default login"
+                        ),
+                    });
                 }
                 a
             }
@@ -176,8 +224,14 @@ async fn supervise(d: &Arc<Daemon>, s: &Arc<Session>, mut resume: Option<String>
         let spec = match build_spec(d, s, &m, &st, account.clone(), resume.clone()) {
             Ok(x) => x,
             Err(e) => {
-                s.emit(Ev::Note { level: "error".into(), message: e.to_string() });
-                s.emit(Ev::Exited { code: None, clean: false });
+                s.emit(Ev::Note {
+                    level: "error".into(),
+                    message: e.to_string(),
+                });
+                s.emit(Ev::Exited {
+                    code: None,
+                    clean: false,
+                });
                 return;
             }
         };
@@ -187,37 +241,76 @@ async fn supervise(d: &Arc<Daemon>, s: &Arc<Session>, mut resume: Option<String>
         s.detach();
         match exit {
             Exit::Stopped => {
-                s.emit(Ev::Exited { code: None, clean: true });
+                s.emit(Ev::Exited {
+                    code: None,
+                    clean: true,
+                });
                 return;
             }
             Exit::Exited(code) => {
-                s.emit(Ev::Exited { code, clean: code == Some(0) });
+                s.emit(Ev::Exited {
+                    code,
+                    clean: code == Some(0),
+                });
                 return;
             }
             Exit::Suspended => {
-                s.emit(Ev::Suspended { generation: d.generation });
+                s.emit(Ev::Suspended {
+                    generation: d.generation,
+                });
                 return;
             }
             Exit::SpawnFailed(e) => {
-                let hint = m.install_hint.as_deref().map(|h| format!(" (install: {h})")).unwrap_or_default();
-                s.emit(Ev::Note { level: "error".into(), message: format!("could not start agent: {e}{hint}") });
-                s.emit(Ev::Exited { code: None, clean: false });
+                let hint = m
+                    .install_hint
+                    .as_deref()
+                    .map(|h| format!(" (install: {h})"))
+                    .unwrap_or_default();
+                s.emit(Ev::Note {
+                    level: "error".into(),
+                    message: format!("could not start agent: {e}{hint}"),
+                });
+                s.emit(Ev::Exited {
+                    code: None,
+                    clean: false,
+                });
                 return;
             }
             Exit::RateLimited(msg) => {
-                s.emit(Ev::RateLimited { account: account.clone(), message: msg });
+                s.emit(Ev::RateLimited {
+                    account: account.clone(),
+                    message: msg,
+                });
                 if let Some(a) = &account {
                     accounts::cool_down(&d.home, &provider, a, 3600);
                 }
-                match account.as_deref().and_then(|a| accounts::pick(&d.home, &provider, Some(a))) {
+                match account
+                    .as_deref()
+                    .and_then(|a| accounts::pick(&d.home, &provider, Some(a)))
+                {
                     Some(next) => {
-                        s.emit(Ev::AccountSwitched { from: account.clone(), to: next });
-                        resume = if m.resume_portable { s.state().provider_session } else { None };
+                        s.emit(Ev::AccountSwitched {
+                            from: account.clone(),
+                            to: next,
+                        });
+                        resume = if m.resume_portable {
+                            s.state().provider_session
+                        } else {
+                            None
+                        };
                         requeue_interrupted(s, "rate limited mid-turn");
                     }
                     None => {
-                        s.emit(Ev::Note { level: "warn".into(), message: "rate limited and no other account is available; session parked".into() });
-                        s.emit(Ev::Exited { code: None, clean: false });
+                        s.emit(Ev::Note {
+                            level: "warn".into(),
+                            message:
+                                "rate limited and no other account is available; session parked"
+                                    .into(),
+                        });
+                        s.emit(Ev::Exited {
+                            code: None,
+                            clean: false,
+                        });
                         return;
                     }
                 }
@@ -226,7 +319,14 @@ async fn supervise(d: &Arc<Daemon>, s: &Arc<Session>, mut resume: Option<String>
     }
 }
 
-fn build_spec(d: &Daemon, s: &Session, m: &Manifest, st: &State, account: Option<String>, resume: Option<String>) -> Result<Spec> {
+fn build_spec(
+    d: &Daemon,
+    s: &Session,
+    m: &Manifest,
+    st: &State,
+    account: Option<String>,
+    resume: Option<String>,
+) -> Result<Spec> {
     let ws = workspace::get(&d.home, &st.workspace)?;
     let cwd = PathBuf::from(&st.cwd);
     let overlay = s.dir.join("overlay");
@@ -253,7 +353,11 @@ fn build_spec(d: &Daemon, s: &Session, m: &Manifest, st: &State, account: Option
         std::fs::write(p, expand(&f.content, &vars))?;
     }
 
-    let mut flags = m.permission_args.get(&st.permission).cloned().unwrap_or_default();
+    let mut flags = m
+        .permission_args
+        .get(&st.permission)
+        .cloned()
+        .unwrap_or_default();
     if !model.is_empty() {
         flags.extend(expand_all(&m.model_args, &vars));
     }
@@ -277,7 +381,9 @@ fn build_spec(d: &Daemon, s: &Session, m: &Manifest, st: &State, account: Option
     for (k, v) in &m.env {
         env.push((k.clone(), expand(v, &vars)));
     }
-    let account_dir = account.as_ref().map(|a| accounts::dir(&d.home, &m.provider(), a));
+    let account_dir = account
+        .as_ref()
+        .map(|a| accounts::dir(&d.home, &m.provider(), a));
     if let (Some(var), Some(dir)) = (&m.account_env, &account_dir) {
         env.push((var.clone(), dir.display().to_string()));
     }
@@ -285,7 +391,13 @@ fn build_spec(d: &Daemon, s: &Session, m: &Manifest, st: &State, account: Option
     let extra: Vec<PathBuf> = ws
         .checkouts
         .iter()
-        .map(|c| if c.kind == "git" { c.source.join(".git") } else { c.path.clone() })
+        .map(|c| {
+            if c.kind == "git" {
+                c.source.join(".git")
+            } else {
+                c.path.clone()
+            }
+        })
         .collect();
     let keys: Vec<String> = env.iter().map(|(k, _)| k.clone()).collect();
     let mounts = sandbox::Mounts {
@@ -295,7 +407,14 @@ fn build_spec(d: &Daemon, s: &Session, m: &Manifest, st: &State, account: Option
         account: account_dir.as_deref(),
         exe: &d.exe,
     };
-    let sandbox_prefix = sandbox::prefix(&st.sandbox, m, &mounts, &keys, &cwd, m.protocol == Protocol::Pty)?;
+    let sandbox_prefix = sandbox::prefix(
+        &st.sandbox,
+        m,
+        &mounts,
+        &keys,
+        &cwd,
+        m.protocol == Protocol::Pty,
+    )?;
 
     Ok(Spec {
         argv,

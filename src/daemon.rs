@@ -28,7 +28,9 @@ pub struct DaemonInfo {
 }
 
 pub fn read_info(home: &Home) -> Option<DaemonInfo> {
-    std::fs::read_to_string(home.daemon_file()).ok().and_then(|t| serde_json::from_str(&t).ok())
+    std::fs::read_to_string(home.daemon_file())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
 }
 
 pub struct Daemon {
@@ -68,6 +70,9 @@ pub struct NewSession {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Fanout {
     pub agents: Vec<String>,
+    /// Optional: try each agent with each of these models.
+    #[serde(default)]
+    pub models: Vec<String>,
     pub repos: Vec<RepoSpec>,
     pub prompt: String,
     #[serde(default = "one")]
@@ -101,7 +106,11 @@ impl Daemon {
 
     pub fn session(&self, id: &str) -> Result<Arc<Session>> {
         let all = self.sessions.read().unwrap();
-        let hits: Vec<_> = all.values().filter(|s| s.id.starts_with(id)).cloned().collect();
+        let hits: Vec<_> = all
+            .values()
+            .filter(|s| s.id.starts_with(id))
+            .cloned()
+            .collect();
         match hits.len() {
             1 => Ok(hits.into_iter().next().unwrap()),
             0 => bail!("no session {id}"),
@@ -114,7 +123,9 @@ impl Daemon {
     }
 
     pub fn create_session(self: &Arc<Self>, req: NewSession) -> Result<Arc<Session>> {
-        let m = self.manifest(&req.agent).with_context(|| format!("unknown agent {}", req.agent))?;
+        let m = self
+            .manifest(&req.agent)
+            .with_context(|| format!("unknown agent {}", req.agent))?;
         let sandbox = req.sandbox.clone().unwrap_or_else(|| "none".into());
         if !crate::sandbox::TIERS.contains(&sandbox.as_str()) {
             bail!("unknown sandbox {sandbox}");
@@ -122,7 +133,11 @@ impl Daemon {
         let title = req
             .title
             .clone()
-            .or_else(|| req.prompt.as_ref().map(|p| crate::adapters::truncate(p.lines().next().unwrap_or(""), 60)))
+            .or_else(|| {
+                req.prompt
+                    .as_ref()
+                    .map(|p| crate::adapters::truncate(p.lines().next().unwrap_or(""), 60))
+            })
             .unwrap_or_else(|| m.display.clone());
         let ws = match (&req.workspace, req.repos.is_empty()) {
             (Some(w), _) => workspace::get(&self.home, w)?,
@@ -154,20 +169,36 @@ impl Daemon {
     pub fn fanout(self: &Arc<Self>, req: Fanout) -> Result<(String, Vec<Arc<Session>>)> {
         let group = short_id("g");
         let mut out = vec![];
+        let models: Vec<Option<String>> = if req.models.is_empty() {
+            vec![None]
+        } else {
+            req.models.iter().cloned().map(Some).collect()
+        };
         for agent in &req.agents {
-            for i in 0..req.n.max(1) {
-                let title = format!("{} #{} · {}", agent, i + 1, crate::adapters::truncate(req.prompt.lines().next().unwrap_or(""), 40));
-                out.push(self.create_session(NewSession {
-                    agent: agent.clone(),
-                    repos: req.repos.clone(),
-                    prompt: Some(req.prompt.clone()),
-                    sandbox: req.sandbox.clone(),
-                    permission: req.permission.clone(),
-                    account: req.account.clone(),
-                    title: Some(title),
-                    group: Some(group.clone()),
-                    ..Default::default()
-                })?);
+            for model in &models {
+                for i in 0..req.n.max(1) {
+                    let who = model
+                        .as_ref()
+                        .map(|m| format!("{agent} · {m}"))
+                        .unwrap_or_else(|| agent.clone());
+                    let title = format!(
+                        "{who} #{} · {}",
+                        i + 1,
+                        crate::adapters::truncate(req.prompt.lines().next().unwrap_or(""), 40)
+                    );
+                    out.push(self.create_session(NewSession {
+                        agent: agent.clone(),
+                        model: model.clone(),
+                        repos: req.repos.clone(),
+                        prompt: Some(req.prompt.clone()),
+                        sandbox: req.sandbox.clone(),
+                        permission: req.permission.clone(),
+                        account: req.account.clone(),
+                        title: Some(title),
+                        group: Some(group.clone()),
+                        ..Default::default()
+                    })?);
+                }
             }
         }
         Ok((group, out))
@@ -184,9 +215,15 @@ impl Daemon {
 
     pub fn stop(&self, s: &Arc<Session>) {
         s.emit(Ev::StopRequested);
-        if !s.send(Cmd::Stop) && !s.is_running() && !matches!(s.state().status, Status::Exited | Status::Failed) {
+        if !s.send(Cmd::Stop)
+            && !s.is_running()
+            && !matches!(s.state().status, Status::Exited | Status::Failed)
+        {
             // Parked (suspended/orphaned): mark it finished so it is never auto-resumed.
-            s.emit(Ev::Exited { code: None, clean: true });
+            s.emit(Ev::Exited {
+                code: None,
+                clean: true,
+            });
         }
     }
 
@@ -199,14 +236,22 @@ impl Daemon {
     }
 
     pub fn feedback(self: &Arc<Self>, s: &Arc<Session>) -> Result<String> {
-        let notes: Vec<_> = s.state().annotations.into_iter().filter(|a| !a.sent).collect();
+        let notes: Vec<_> = s
+            .state()
+            .annotations
+            .into_iter()
+            .filter(|a| !a.sent)
+            .collect();
         if notes.is_empty() {
             bail!("no unsent annotations");
         }
         let ws = self.workspace_of(s)?;
         let text = review::feedback_prompt(&ws, &notes);
         let pid = self.prompt(s, &text);
-        s.emit(Ev::FeedbackSent { annotations: notes.iter().map(|a| a.id.clone()).collect(), prompt_id: pid.clone() });
+        s.emit(Ev::FeedbackSent {
+            annotations: notes.iter().map(|a| a.id.clone()).collect(),
+            prompt_id: pid.clone(),
+        });
         Ok(pid)
     }
 
@@ -216,15 +261,27 @@ impl Daemon {
         }
         let ws = self.workspace_of(s)?;
         let st = s.state();
-        let results = review::merge(&ws, &format!("{} ({}, Fleet-51 session {})", st.title, st.agent, st.id))?;
+        let results = review::merge(
+            &ws,
+            &format!("{} ({}, Fleet-51 session {})", st.title, st.agent, st.id),
+        )?;
         for r in &results {
-            s.emit(Ev::Merged { checkout: r.checkout.clone(), branch: r.branch.clone(), into: r.into.clone(), commit: r.commit.clone() });
+            s.emit(Ev::Merged {
+                checkout: r.checkout.clone(),
+                branch: r.branch.clone(),
+                into: r.into.clone(),
+                commit: r.commit.clone(),
+            });
         }
         Ok(results)
     }
 
     pub async fn suspend_all(&self) {
-        let running: Vec<_> = self.all_sessions().into_iter().filter(|s| s.is_running()).collect();
+        let running: Vec<_> = self
+            .all_sessions()
+            .into_iter()
+            .filter(|s| s.is_running())
+            .collect();
         for s in &running {
             s.send(Cmd::Suspend);
         }
@@ -238,22 +295,33 @@ impl Daemon {
 }
 
 async fn hand_off(home: &Home, token: &str) -> u64 {
-    let Some(prev) = read_info(home) else { return 1 };
+    let Some(prev) = read_info(home) else {
+        return 1;
+    };
     let next = prev.generation + 1;
     if prev.pid == std::process::id() || !pid_alive(prev.pid) {
         return next;
     }
-    eprintln!("fleet51: asking generation {} (pid {}) to hand off", prev.generation, prev.pid);
+    eprintln!(
+        "fleet51: asking generation {} (pid {}) to hand off",
+        prev.generation, prev.pid
+    );
     let url = format!("{}/api/shutdown", prev.url);
     let auth = format!("Bearer {token}");
-    let _ = tokio::task::spawn_blocking(move || ureq::post(&url).header("Authorization", &auth).send_empty()).await;
+    let _ = tokio::task::spawn_blocking(move || {
+        ureq::post(&url).header("Authorization", &auth).send_empty()
+    })
+    .await;
     for _ in 0..150 {
         if !pid_alive(prev.pid) {
             return next;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    eprintln!("fleet51: generation {} did not exit; terminating it", prev.generation);
+    eprintln!(
+        "fleet51: generation {} did not exit; terminating it",
+        prev.generation
+    );
     kill_pid(prev.pid);
     next
 }
@@ -262,11 +330,22 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
     home.ensure()?;
     let token = home.token()?;
     let generation = hand_off(&home, &token).await;
-    let listener = tokio::net::TcpListener::bind(listen).await.with_context(|| format!("binding {listen}"))?;
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .with_context(|| format!("binding {listen}"))?;
     let addr = listener.local_addr()?;
-    let host = if addr.ip().is_unspecified() { "127.0.0.1".to_string() } else { addr.ip().to_string() };
+    let host = if addr.ip().is_unspecified() {
+        "127.0.0.1".to_string()
+    } else {
+        addr.ip().to_string()
+    };
     let url = format!("http://{host}:{}", addr.port());
-    let info = DaemonInfo { pid: std::process::id(), generation, url: url.clone(), started: now_ms() };
+    let info = DaemonInfo {
+        pid: std::process::id(),
+        generation,
+        url: url.clone(),
+        started: now_ms(),
+    };
     std::fs::write(home.daemon_file(), serde_json::to_string_pretty(&info)?)?;
 
     let (global, _) = broadcast::channel(4096);
@@ -291,9 +370,15 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
         };
         let st = s.state();
         if st.status.is_live() {
-            if let Some(pid) = st.pid.filter(|p| pid_alive(*p) && pid_belongs_to_session(*p, &id)) {
+            if let Some(pid) = st
+                .pid
+                .filter(|p| pid_alive(*p) && pid_belongs_to_session(*p, &id))
+            {
                 kill_pid(pid);
-                s.emit(Ev::Note { level: "warn".into(), message: format!("reaped pid {pid} left by a crashed daemon") });
+                s.emit(Ev::Note {
+                    level: "warn".into(),
+                    message: format!("reaped pid {pid} left by a crashed daemon"),
+                });
             }
             s.emit(Ev::Orphaned { generation });
         }

@@ -22,7 +22,10 @@ fn cooldowns_file(home: &Home) -> PathBuf {
 }
 
 fn cooldowns(home: &Home) -> BTreeMap<String, u64> {
-    std::fs::read_to_string(cooldowns_file(home)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    std::fs::read_to_string(cooldowns_file(home))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
 }
 
 pub fn dir(home: &Home, provider: &str, name: &str) -> PathBuf {
@@ -30,7 +33,11 @@ pub fn dir(home: &Home, provider: &str, name: &str) -> PathBuf {
 }
 
 pub fn add(home: &Home, provider: &str, name: &str) -> Result<PathBuf> {
-    let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
     if !ok(provider) || !ok(name) {
         bail!("provider and account names may only use letters, digits, - and _");
     }
@@ -43,7 +50,11 @@ pub fn list(home: &Home) -> Vec<Account> {
     let cd = cooldowns(home);
     let now = now_ms();
     let mut out = vec![];
-    for p in std::fs::read_dir(home.accounts()).into_iter().flatten().flatten() {
+    for p in std::fs::read_dir(home.accounts())
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
         if !p.path().is_dir() {
             continue;
         }
@@ -53,8 +64,16 @@ pub fn list(home: &Home) -> Vec<Account> {
                 continue;
             }
             let name = a.file_name().to_string_lossy().to_string();
-            let until = cd.get(&format!("{provider}/{name}")).copied().filter(|u| *u > now);
-            out.push(Account { provider: provider.clone(), name, dir: a.path(), cooldown_until: until });
+            let until = cd
+                .get(&format!("{provider}/{name}"))
+                .copied()
+                .filter(|u| *u > now);
+            out.push(Account {
+                provider: provider.clone(),
+                name,
+                dir: a.path(),
+                cooldown_until: until,
+            });
         }
     }
     out.sort_by(|a, b| (&a.provider, &a.name).cmp(&(&b.provider, &b.name)));
@@ -64,14 +83,19 @@ pub fn list(home: &Home) -> Vec<Account> {
 pub fn cool_down(home: &Home, provider: &str, name: &str, secs: u64) {
     let mut cd = cooldowns(home);
     cd.insert(format!("{provider}/{name}"), now_ms() + secs * 1000);
-    let _ = std::fs::write(cooldowns_file(home), serde_json::to_string_pretty(&cd).unwrap_or_default());
+    let _ = std::fs::write(
+        cooldowns_file(home),
+        serde_json::to_string_pretty(&cd).unwrap_or_default(),
+    );
 }
 
 /// First account for `provider` that is not cooling down and is not `exclude`.
 pub fn pick(home: &Home, provider: &str, exclude: Option<&str>) -> Option<String> {
     list(home)
         .into_iter()
-        .filter(|a| a.provider == provider && a.cooldown_until.is_none() && Some(a.name.as_str()) != exclude)
+        .filter(|a| {
+            a.provider == provider && a.cooldown_until.is_none() && Some(a.name.as_str()) != exclude
+        })
         .map(|a| a.name)
         .next()
 }

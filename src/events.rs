@@ -35,14 +35,33 @@ pub enum Ev {
         resume: Option<String>,
     },
     Ready,
-    PromptQueued { id: String, text: String },
-    PromptDelivered { id: String },
-    PromptAcked { id: String },
-    ProviderSession { id: String },
-    Text { text: String },
-    ToolCall { name: String, input: Value },
-    Permission { tool: String, decision: String },
-    Output { data: String },
+    PromptQueued {
+        id: String,
+        text: String,
+    },
+    PromptDelivered {
+        id: String,
+    },
+    PromptAcked {
+        id: String,
+    },
+    ProviderSession {
+        id: String,
+    },
+    Text {
+        text: String,
+    },
+    ToolCall {
+        name: String,
+        input: Value,
+    },
+    Permission {
+        tool: String,
+        decision: String,
+    },
+    Output {
+        data: String,
+    },
     TurnDone {
         ok: bool,
         summary: Option<String>,
@@ -50,17 +69,49 @@ pub enum Ev {
         output_tokens: u64,
         cost_usd: f64,
     },
-    RateLimited { account: Option<String>, message: String },
-    AccountSwitched { from: Option<String>, to: String },
-    Hook { name: String, payload: Value },
-    Annotation { id: String, file: String, line: u32, comment: String },
-    FeedbackSent { annotations: Vec<String>, prompt_id: String },
+    RateLimited {
+        account: Option<String>,
+        message: String,
+    },
+    AccountSwitched {
+        from: Option<String>,
+        to: String,
+    },
+    Hook {
+        name: String,
+        payload: Value,
+    },
+    Annotation {
+        id: String,
+        file: String,
+        line: u32,
+        comment: String,
+    },
+    FeedbackSent {
+        annotations: Vec<String>,
+        prompt_id: String,
+    },
     StopRequested,
-    Suspended { generation: u64 },
-    Orphaned { generation: u64 },
-    Exited { code: Option<i32>, clean: bool },
-    Merged { checkout: String, branch: String, into: String, commit: String },
-    Note { level: String, message: String },
+    Suspended {
+        generation: u64,
+    },
+    Orphaned {
+        generation: u64,
+    },
+    Exited {
+        code: Option<i32>,
+        clean: bool,
+    },
+    Merged {
+        checkout: String,
+        branch: String,
+        into: String,
+        commit: String,
+    },
+    Note {
+        level: String,
+        message: String,
+    },
 }
 
 /// What the daemon-wide stream carries: every session's events and state changes on one
@@ -89,7 +140,10 @@ pub enum Status {
 impl Status {
     /// No terminal event yet: the process should still be alive.
     pub fn is_live(self) -> bool {
-        matches!(self, Status::Starting | Status::Idle | Status::Working | Status::RateLimited)
+        matches!(
+            self,
+            Status::Starting | Status::Idle | Status::Working | Status::RateLimited
+        )
     }
 }
 
@@ -147,7 +201,17 @@ impl State {
         self.last_seq = e.seq;
         self.updated = e.ts;
         match &e.ev {
-            Ev::Created { agent, workspace, cwd, title, sandbox, permission, account, model, group } => {
+            Ev::Created {
+                agent,
+                workspace,
+                cwd,
+                title,
+                sandbox,
+                permission,
+                account,
+                model,
+                group,
+            } => {
                 self.agent = agent.clone();
                 self.workspace = workspace.clone();
                 self.cwd = cwd.clone();
@@ -174,9 +238,11 @@ impl State {
                     self.status = Status::Idle;
                 }
             }
-            Ev::PromptQueued { id, text } => {
-                self.pending.push(Prompt { id: id.clone(), text: text.clone(), delivered: false })
-            }
+            Ev::PromptQueued { id, text } => self.pending.push(Prompt {
+                id: id.clone(),
+                text: text.clone(),
+                delivered: false,
+            }),
             Ev::PromptDelivered { id } => {
                 if let Some(p) = self.pending.iter_mut().find(|p| &p.id == id) {
                     p.delivered = true;
@@ -192,7 +258,12 @@ impl State {
             }
             Ev::ProviderSession { id } => self.provider_session = Some(id.clone()),
             Ev::Text { text } => self.last_text = Some(text.clone()),
-            Ev::TurnDone { input_tokens, output_tokens, cost_usd, .. } => {
+            Ev::TurnDone {
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                ..
+            } => {
                 self.open_turn = None;
                 self.turns += 1;
                 self.input_tokens += input_tokens;
@@ -204,7 +275,12 @@ impl State {
             }
             Ev::RateLimited { .. } => self.status = Status::RateLimited,
             Ev::AccountSwitched { to, .. } => self.account = Some(to.clone()),
-            Ev::Annotation { id, file, line, comment } => self.annotations.push(AnnotationState {
+            Ev::Annotation {
+                id,
+                file,
+                line,
+                comment,
+            } => self.annotations.push(AnnotationState {
                 id: id.clone(),
                 file: file.clone(),
                 line: *line,
@@ -212,7 +288,11 @@ impl State {
                 sent: false,
             }),
             Ev::FeedbackSent { annotations, .. } => {
-                for a in self.annotations.iter_mut().filter(|a| annotations.contains(&a.id)) {
+                for a in self
+                    .annotations
+                    .iter_mut()
+                    .filter(|a| annotations.contains(&a.id))
+                {
                     a.sent = true;
                 }
             }
@@ -222,10 +302,18 @@ impl State {
             Ev::Exited { code, clean } => {
                 self.exit_code = *code;
                 self.pid = None;
-                self.status = if *clean { Status::Exited } else { Status::Failed };
+                self.status = if *clean {
+                    Status::Exited
+                } else {
+                    Status::Failed
+                };
             }
             Ev::Merged { .. } => self.merged = true,
-            Ev::Output { .. } | Ev::ToolCall { .. } | Ev::Permission { .. } | Ev::Hook { .. } | Ev::Note { .. } => {}
+            Ev::Output { .. }
+            | Ev::ToolCall { .. }
+            | Ev::Permission { .. }
+            | Ev::Hook { .. }
+            | Ev::Note { .. } => {}
         }
     }
 
@@ -246,13 +334,31 @@ mod tests {
     #[test]
     fn acked_prompts_are_not_pending_and_clean_exit_is_not_resumed() {
         let mut s = State::default();
-        s.apply(&ev(1, Ev::PromptQueued { id: "a".into(), text: "one".into() }));
-        s.apply(&ev(2, Ev::PromptQueued { id: "b".into(), text: "two".into() }));
+        s.apply(&ev(
+            1,
+            Ev::PromptQueued {
+                id: "a".into(),
+                text: "one".into(),
+            },
+        ));
+        s.apply(&ev(
+            2,
+            Ev::PromptQueued {
+                id: "b".into(),
+                text: "two".into(),
+            },
+        ));
         s.apply(&ev(3, Ev::PromptDelivered { id: "a".into() }));
         s.apply(&ev(4, Ev::PromptAcked { id: "a".into() }));
         assert_eq!(s.pending.len(), 1);
         assert_eq!(s.pending[0].id, "b");
-        s.apply(&ev(5, Ev::Exited { code: Some(0), clean: true }));
+        s.apply(&ev(
+            5,
+            Ev::Exited {
+                code: Some(0),
+                clean: true,
+            },
+        ));
         assert!(!s.should_auto_resume());
         s.apply(&ev(6, Ev::Orphaned { generation: 2 }));
         assert!(s.should_auto_resume());

@@ -63,9 +63,18 @@ impl Workspace {
 }
 
 pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().context("running git")?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .context("running git")?;
     if !out.status.success() {
-        bail!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
@@ -74,11 +83,20 @@ pub fn shadow(ws: &Workspace, c: &Checkout, args: &[&str]) -> Result<String> {
     let out = Command::new("git")
         .arg(format!("--git-dir={}", ws.shadow_git(c).display()))
         .arg(format!("--work-tree={}", c.path.display()))
-        .args(["-c", "user.name=fleet51", "-c", "user.email=fleet51@localhost"])
+        .args([
+            "-c",
+            "user.name=fleet51",
+            "-c",
+            "user.email=fleet51@localhost",
+        ])
         .args(args)
         .output()?;
     if !out.status.success() {
-        bail!("shadow git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "shadow git {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
@@ -95,7 +113,16 @@ fn which_kind(path: &Path) -> String {
 }
 
 fn slug(s: &str) -> String {
-    let out: String = s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' }).collect();
+    let out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
     out.trim_matches('-').chars().take(40).collect()
 }
 
@@ -106,19 +133,36 @@ pub fn create(home: &Home, name: &str, repos: &[RepoSpec]) -> Result<Workspace> 
     let id = short_id("w");
     let root = home.workspaces().join(&id);
     std::fs::create_dir_all(&root)?;
-    let mut ws = Workspace { id: id.clone(), name: name.to_string(), root: root.clone(), checkouts: vec![], created: now_ms() };
+    let mut ws = Workspace {
+        id: id.clone(),
+        name: name.to_string(),
+        root: root.clone(),
+        checkouts: vec![],
+        created: now_ms(),
+    };
     for r in repos {
-        let given = std::fs::canonicalize(&r.path).with_context(|| format!("{} does not exist", r.path))?;
+        let given =
+            std::fs::canonicalize(&r.path).with_context(|| format!("{} does not exist", r.path))?;
         let kind = r.kind.clone().unwrap_or_else(|| which_kind(&given));
-        let mut co_name = given.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "repo".into());
+        let mut co_name = given
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "repo".into());
         while ws.checkouts.iter().any(|c| c.name == co_name) {
             co_name.push_str("-2");
         }
         let co = match kind.as_str() {
             "git" => {
                 let top = PathBuf::from(git(&given, &["rev-parse", "--show-toplevel"])?);
-                let subdir = given.strip_prefix(&top).ok().filter(|p| !p.as_os_str().is_empty()).map(|p| p.display().to_string());
-                co_name = top.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(co_name);
+                let subdir = given
+                    .strip_prefix(&top)
+                    .ok()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .map(|p| p.display().to_string());
+                co_name = top
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or(co_name);
                 while ws.checkouts.iter().any(|c| c.name == co_name) {
                     co_name.push_str("-2");
                 }
@@ -126,8 +170,28 @@ pub fn create(home: &Home, name: &str, repos: &[RepoSpec]) -> Result<Workspace> 
                 let source_branch = git(&top, &["symbolic-ref", "--short", "-q", "HEAD"]).ok();
                 let branch = format!("fleet51/{}-{}", slug(name), &id[2..]);
                 let path = root.join(&co_name);
-                git(&top, &["worktree", "add", "-q", "-b", &branch, &path.display().to_string(), &base])?;
-                Checkout { name: co_name, kind, source: top, path, subdir, base: Some(base), branch: Some(branch), source_branch }
+                git(
+                    &top,
+                    &[
+                        "worktree",
+                        "add",
+                        "-q",
+                        "-b",
+                        &branch,
+                        &path.display().to_string(),
+                        &base,
+                    ],
+                )?;
+                Checkout {
+                    name: co_name,
+                    kind,
+                    source: top,
+                    path,
+                    subdir,
+                    base: Some(base),
+                    branch: Some(branch),
+                    source_branch,
+                }
             }
             "jj" => {
                 let path = root.join(&co_name);
@@ -138,19 +202,44 @@ pub fn create(home: &Home, name: &str, repos: &[RepoSpec]) -> Result<Workspace> 
                     .arg(&path)
                     .output()?;
                 if !out.status.success() {
-                    bail!("jj workspace add: {}", String::from_utf8_lossy(&out.stderr).trim());
+                    bail!(
+                        "jj workspace add: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
                 }
-                Checkout { name: co_name, kind, source: given.clone(), path, subdir: None, base: Some("@-".into()), branch: None, source_branch: None }
+                Checkout {
+                    name: co_name,
+                    kind,
+                    source: given.clone(),
+                    path,
+                    subdir: None,
+                    base: Some("@-".into()),
+                    branch: None,
+                    source_branch: None,
+                }
             }
             "folder" => {
-                let c = Checkout { name: co_name, kind, source: given.clone(), path: given.clone(), subdir: None, base: None, branch: None, source_branch: None };
+                let c = Checkout {
+                    name: co_name,
+                    kind,
+                    source: given.clone(),
+                    path: given.clone(),
+                    subdir: None,
+                    base: None,
+                    branch: None,
+                    source_branch: None,
+                };
                 shadow(&ws, &c, &["init", "-q"]).or_else(|_| {
                     // `init` needs the git dir to exist as a bare-ish location.
                     std::fs::create_dir_all(ws.shadow_git(&c))?;
                     shadow(&ws, &c, &["init", "-q"])
                 })?;
                 shadow(&ws, &c, &["add", "-A"])?;
-                shadow(&ws, &c, &["commit", "-q", "--allow-empty", "-m", "fleet51 snapshot"])?;
+                shadow(
+                    &ws,
+                    &c,
+                    &["commit", "-q", "--allow-empty", "-m", "fleet51 snapshot"],
+                )?;
                 c
             }
             other => bail!("unknown checkout kind {other} (use git, jj or folder)"),
@@ -163,7 +252,10 @@ pub fn create(home: &Home, name: &str, repos: &[RepoSpec]) -> Result<Workspace> 
 
 pub fn save(home: &Home, ws: &Workspace) -> Result<()> {
     std::fs::create_dir_all(&ws.root)?;
-    std::fs::write(home.workspaces().join(&ws.id).join("workspace.json"), serde_json::to_string_pretty(ws)?)?;
+    std::fs::write(
+        home.workspaces().join(&ws.id).join("workspace.json"),
+        serde_json::to_string_pretty(ws)?,
+    )?;
     Ok(())
 }
 
@@ -181,7 +273,10 @@ pub fn list(home: &Home) -> Vec<Workspace> {
 
 pub fn get(home: &Home, id: &str) -> Result<Workspace> {
     let all = list(home);
-    let hits: Vec<_> = all.into_iter().filter(|w| w.id.starts_with(id) || w.name == id).collect();
+    let hits: Vec<_> = all
+        .into_iter()
+        .filter(|w| w.id.starts_with(id) || w.name == id)
+        .collect();
     match hits.len() {
         1 => Ok(hits.into_iter().next().unwrap()),
         0 => bail!("no workspace {id}"),
@@ -194,10 +289,22 @@ pub fn remove(home: &Home, id: &str) -> Result<()> {
     for c in &ws.checkouts {
         match c.kind.as_str() {
             "git" => {
-                let _ = git(&c.source, &["worktree", "remove", "--force", &c.path.display().to_string()]);
+                let _ = git(
+                    &c.source,
+                    &[
+                        "worktree",
+                        "remove",
+                        "--force",
+                        &c.path.display().to_string(),
+                    ],
+                );
             }
             "jj" => {
-                let _ = Command::new("jj").arg("-R").arg(&c.source).args(["workspace", "forget", &format!("fleet51-{}", ws.id)]).status();
+                let _ = Command::new("jj")
+                    .arg("-R")
+                    .arg(&c.source)
+                    .args(["workspace", "forget", &format!("fleet51-{}", ws.id)])
+                    .status();
             }
             _ => {}
         }

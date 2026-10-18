@@ -1,5 +1,6 @@
 mod accounts;
 mod adapters;
+mod agent;
 mod client;
 mod daemon;
 mod events;
@@ -23,7 +24,11 @@ use client::Client;
 use home::Home;
 
 #[derive(Parser)]
-#[command(name = "fleet51", version, about = "Fleet-51: run a fleet of coding agents from one headless daemon")]
+#[command(
+    name = "fleet51",
+    version,
+    about = "Fleet-51: run a fleet of coding agents from one headless daemon"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -84,6 +89,9 @@ enum Cmd {
     Fanout {
         #[arg(long, value_delimiter = ',')]
         agents: Vec<String>,
+        /// Models to try with each agent, e.g. --models qwen3:1.7b,llama3.2:3b
+        #[arg(long, value_delimiter = ',')]
+        models: Vec<String>,
         #[arg(long = "repo")]
         repos: Vec<String>,
         #[arg(short, long)]
@@ -107,21 +115,43 @@ enum Cmd {
         follow: bool,
     },
     /// Send a prompt (resumes the session if it is not running)
-    Send { id: String, text: Vec<String> },
-    Stop { id: String },
-    Resume { id: String },
+    Send {
+        id: String,
+        text: Vec<String>,
+    },
+    Stop {
+        id: String,
+    },
+    Resume {
+        id: String,
+    },
     /// Show the session's diff across every repo in its workspace
-    Diff { id: String },
+    Diff {
+        id: String,
+    },
     /// Comment on a line of the diff: `fleet51 annotate s-1234 src/app.rs:42 handle the error`
-    Annotate { id: String, at: String, comment: Vec<String> },
+    Annotate {
+        id: String,
+        at: String,
+        comment: Vec<String>,
+    },
     /// Send all unsent annotations to the agent as one review prompt
-    Feedback { id: String },
+    Feedback {
+        id: String,
+    },
     /// Commit the agent's work and merge its branch into the repo's branch
-    Merge { id: String },
+    Merge {
+        id: String,
+    },
     /// Compare the attempts of a fan-out group
-    Compare { group: String },
+    Compare {
+        group: String,
+    },
     /// Open the session's checkout (optionally file:line) in your own editor
-    Open { id: String, at: Option<String> },
+    Open {
+        id: String,
+        at: Option<String>,
+    },
     /// Token and cost usage by agent and account
     Usage,
     #[command(subcommand)]
@@ -133,6 +163,28 @@ enum Cmd {
         session: String,
         #[arg(long)]
         name: String,
+    },
+    /// List models on the local Ollama server
+    Models,
+    /// Built-in coding agent for Ollama or any OpenAI-compatible server (launched by the daemon)
+    #[command(hide = true)]
+    Agent {
+        #[arg(long, default_value = "ollama")]
+        provider: String,
+        #[arg(long)]
+        base_url: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        resume: Option<String>,
+        #[arg(long, default_value = "default")]
+        permission_mode: String,
+        #[arg(long)]
+        state_dir: Option<std::path::PathBuf>,
+        #[arg(long)]
+        replay_user_messages: bool,
+        #[arg(long, default_value_t = 30)]
+        max_steps: usize,
     },
     /// Offline agent that speaks a real protocol (claude | codex | acp | pty)
     #[command(hide = true)]
@@ -155,15 +207,22 @@ enum WsCmd {
         kind: Option<String>,
     },
     Ls,
-    Rm { id: String },
-    Diff { id: String },
+    Rm {
+        id: String,
+    },
+    Diff {
+        id: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum AccountsCmd {
     Ls,
     /// Add an account: an isolated config dir the agent logs in to once
-    Add { provider: String, name: String },
+    Add {
+        provider: String,
+        name: String,
+    },
 }
 
 fn main() {
@@ -174,7 +233,10 @@ fn main() {
 }
 
 fn repos(paths: &[String], kind: Option<&str>) -> Value {
-    json!(paths.iter().map(|p| json!({"path": p, "kind": kind})).collect::<Vec<_>>())
+    json!(paths
+        .iter()
+        .map(|p| json!({"path": p, "kind": kind}))
+        .collect::<Vec<_>>())
 }
 
 fn real_main() -> Result<()> {
@@ -188,6 +250,31 @@ fn real_main() -> Result<()> {
             std::process::exit(0);
         }
         Cmd::MockAgent { protocol, rest } => mock::run(&protocol, rest),
+        Cmd::Agent {
+            provider,
+            base_url,
+            model,
+            resume,
+            permission_mode,
+            state_dir,
+            replay_user_messages,
+            max_steps,
+        } => agent::run(agent::Opts {
+            provider,
+            base_url,
+            model,
+            resume,
+            permission: permission_mode,
+            state_dir,
+            replay: replay_user_messages,
+            max_steps,
+        }),
+        Cmd::Models => {
+            for m in agent::ollama_models()? {
+                println!("{m}");
+            }
+            Ok(())
+        }
         Cmd::Up { listen } => up(&home, &listen),
         Cmd::Hook { session, name } => {
             let mut input = String::new();
@@ -195,7 +282,10 @@ fn real_main() -> Result<()> {
             let payload = serde_json::from_str::<Value>(&input).unwrap_or(Value::Null);
             // A hook must never break the agent, so failures are silent.
             if let Ok(c) = Client::new(&home) {
-                let _ = c.post("/api/hook", json!({"session": session, "name": name, "payload": payload}));
+                let _ = c.post(
+                    "/api/hook",
+                    json!({"session": session, "name": name, "payload": payload}),
+                );
             }
             Ok(())
         }
@@ -207,13 +297,19 @@ fn up(home: &Home, listen: &str) -> Result<()> {
     home.ensure()?;
     if let Some(info) = daemon::read_info(home) {
         if Client::new(home).and_then(|c| c.get("/api/health")).is_ok() {
-            println!("Fleet-51 already running (generation {}) at {}", info.generation, info.url);
+            println!(
+                "Fleet-51 already running (generation {}) at {}",
+                info.generation, info.url
+            );
             return Ok(());
         }
     }
     let log = std::fs::File::create(home.root.join("daemon.log"))?;
     let mut cmd = std::process::Command::new(std::env::current_exe()?);
-    cmd.args(["daemon", "--listen", listen]).stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
+    cmd.args(["daemon", "--listen", listen])
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -223,11 +319,18 @@ fn up(home: &Home, listen: &str) -> Result<()> {
     for _ in 0..50 {
         std::thread::sleep(Duration::from_millis(100));
         if let Ok(h) = Client::new(home).and_then(|c| c.get("/api/health")) {
-            println!("Fleet-51 daemon generation {} running at {}", h["generation"], h["url"].as_str().unwrap_or(""));
+            println!(
+                "Fleet-51 daemon generation {} running at {}",
+                h["generation"],
+                h["url"].as_str().unwrap_or("")
+            );
             return Ok(());
         }
     }
-    bail!("daemon did not come up; see {}", home.root.join("daemon.log").display())
+    bail!(
+        "daemon did not come up; see {}",
+        home.root.join("daemon.log").display()
+    )
 }
 
 fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
@@ -240,21 +343,62 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
         Cmd::Status => {
             let h = c.get("/api/health")?;
             let s = c.get("/api/sessions")?;
-            let live = s.as_array().map(|a| a.iter().filter(|x| matches!(x["status"].as_str(), Some("idle" | "working" | "starting"))).count()).unwrap_or(0);
-            println!("Fleet-51 {} · generation {} · pid {} · {}", h["version"].as_str().unwrap_or(""), h["generation"], h["pid"], h["url"].as_str().unwrap_or(""));
-            println!("{} session(s), {live} live", s.as_array().map(|a| a.len()).unwrap_or(0));
+            let live = s
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|x| {
+                            matches!(x["status"].as_str(), Some("idle" | "working" | "starting"))
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            println!(
+                "Fleet-51 {} · generation {} · pid {} · {}",
+                h["version"].as_str().unwrap_or(""),
+                h["generation"],
+                h["pid"],
+                h["url"].as_str().unwrap_or("")
+            );
+            println!(
+                "{} session(s), {live} live",
+                s.as_array().map(|a| a.len()).unwrap_or(0)
+            );
         }
         Cmd::Url => println!("{}/?token={}", c.base, c.token),
         Cmd::Agents => {
             for a in c.get("/api/agents")?.as_array().into_iter().flatten() {
-                let mark = if a["available"].as_bool() == Some(true) { "✓" } else { "·" };
-                let hint = if a["available"].as_bool() == Some(true) { String::new() } else { a["install_hint"].as_str().map(|h| format!("  ({h})")).unwrap_or_default() };
-                println!("{mark} {:<12} {:<20} {}{hint}", a["name"].as_str().unwrap_or(""), a["protocol"].as_str().unwrap_or(""), a["display"].as_str().unwrap_or(""));
+                let mark = if a["available"].as_bool() == Some(true) {
+                    "✓"
+                } else {
+                    "·"
+                };
+                let hint = if a["available"].as_bool() == Some(true) {
+                    String::new()
+                } else {
+                    a["install_hint"]
+                        .as_str()
+                        .map(|h| format!("  ({h})"))
+                        .unwrap_or_default()
+                };
+                println!(
+                    "{mark} {:<12} {:<20} {}{hint}",
+                    a["name"].as_str().unwrap_or(""),
+                    a["protocol"].as_str().unwrap_or(""),
+                    a["display"].as_str().unwrap_or("")
+                );
             }
         }
         Cmd::Ws(w) => match w {
-            WsCmd::Create { name, repos: r, kind } => {
-                let ws = c.post("/api/workspaces", json!({"name": name, "repos": repos(&r, kind.as_deref())}))?;
+            WsCmd::Create {
+                name,
+                repos: r,
+                kind,
+            } => {
+                let ws = c.post(
+                    "/api/workspaces",
+                    json!({"name": name, "repos": repos(&r, kind.as_deref())}),
+                )?;
                 print_ws(&ws);
             }
             WsCmd::Ls => {
@@ -262,40 +406,85 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
                     print_ws(ws);
                 }
             }
-            WsCmd::Rm { id } => println!("removed {}", c.delete(&format!("/api/workspaces/{id}"))?["removed"]),
+            WsCmd::Rm { id } => println!(
+                "removed {}",
+                c.delete(&format!("/api/workspaces/{id}"))?["removed"]
+            ),
             WsCmd::Diff { id } => {
                 let d = c.get(&format!("/api/workspaces/{id}/diff"))?;
                 print_diff(d.as_array().cloned().unwrap_or_default());
             }
         },
-        Cmd::Run { agent, repos: r, ws, prompt, sandbox, permission, account, model, title, wait } => {
-            let r = if r.is_empty() && ws.is_none() { vec![".".to_string()] } else { r };
+        Cmd::Run {
+            agent,
+            repos: r,
+            ws,
+            prompt,
+            sandbox,
+            permission,
+            account,
+            model,
+            title,
+            wait,
+        } => {
+            let r = if r.is_empty() && ws.is_none() {
+                vec![".".to_string()]
+            } else {
+                r
+            };
             let st = c.post(
                 "/api/sessions",
                 json!({"agent": agent, "workspace": ws, "repos": repos(&r, None), "prompt": prompt, "sandbox": sandbox,
                        "permission": permission, "account": account, "model": model, "title": title}),
             )?;
             let id = st["id"].as_str().unwrap_or_default().to_string();
-            println!("session {id} · {} in {}", st["agent"].as_str().unwrap_or(""), st["cwd"].as_str().unwrap_or(""));
+            println!(
+                "session {id} · {} in {}",
+                st["agent"].as_str().unwrap_or(""),
+                st["cwd"].as_str().unwrap_or("")
+            );
             if wait {
                 follow(&c, &id, true)?;
             }
         }
-        Cmd::Fanout { agents, repos: r, prompt, n, sandbox, permission, account } => {
-            let r = if r.is_empty() { vec![".".to_string()] } else { r };
+        Cmd::Fanout {
+            agents,
+            models,
+            repos: r,
+            prompt,
+            n,
+            sandbox,
+            permission,
+            account,
+        } => {
+            let r = if r.is_empty() {
+                vec![".".to_string()]
+            } else {
+                r
+            };
             let out = c.post(
                 "/api/fanout",
-                json!({"agents": agents, "repos": repos(&r, None), "prompt": prompt, "n": n, "sandbox": sandbox, "permission": permission, "account": account}),
+                json!({"agents": agents, "models": models, "repos": repos(&r, None), "prompt": prompt, "n": n, "sandbox": sandbox, "permission": permission, "account": account}),
             )?;
             println!("group {}", out["group"].as_str().unwrap_or(""));
             for s in out["sessions"].as_array().into_iter().flatten() {
-                println!("  {}  {}", s["id"].as_str().unwrap_or(""), s["title"].as_str().unwrap_or(""));
+                println!(
+                    "  {}  {}",
+                    s["id"].as_str().unwrap_or(""),
+                    s["title"].as_str().unwrap_or("")
+                );
             }
-            println!("compare with: fleet51 compare {}", out["group"].as_str().unwrap_or(""));
+            println!(
+                "compare with: fleet51 compare {}",
+                out["group"].as_str().unwrap_or("")
+            );
         }
         Cmd::Ls => {
             let list = c.get("/api/sessions")?;
-            println!("{:<11} {:<12} {:<12} {:>5} {:>9}  TITLE", "ID", "AGENT", "STATUS", "TURNS", "COST");
+            println!(
+                "{:<11} {:<12} {:<12} {:>5} {:>9}  TITLE",
+                "ID", "AGENT", "STATUS", "TURNS", "COST"
+            );
             for s in list.as_array().into_iter().flatten() {
                 println!(
                     "{:<11} {:<12} {:<12} {:>5} {:>9}  {}",
@@ -308,48 +497,93 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
                 );
             }
         }
-        Cmd::Log { id, follow: f } => c.stream(&format!("/api/sessions/{id}/events?follow={f}"), |e| {
-            if let Some(line) = fmt_event(&e) {
-                println!("{line}");
-            }
-            true
-        })?,
+        Cmd::Log { id, follow: f } => {
+            c.stream(&format!("/api/sessions/{id}/events?follow={f}"), |e| {
+                if let Some(line) = fmt_event(&e) {
+                    println!("{line}");
+                }
+                true
+            })?
+        }
         Cmd::Send { id, text } => {
-            let r = c.post(&format!("/api/sessions/{id}/prompt"), json!({"text": text.join(" ")}))?;
+            let r = c.post(
+                &format!("/api/sessions/{id}/prompt"),
+                json!({"text": text.join(" ")}),
+            )?;
             println!("queued {}", r["prompt"].as_str().unwrap_or(""));
         }
-        Cmd::Stop { id } => println!("{}", c.post(&format!("/api/sessions/{id}/stop"), json!({}))?["status"]),
-        Cmd::Resume { id } => println!("{}", c.post(&format!("/api/sessions/{id}/resume"), json!({}))?["status"]),
+        Cmd::Stop { id } => println!(
+            "{}",
+            c.post(&format!("/api/sessions/{id}/stop"), json!({}))?["status"]
+        ),
+        Cmd::Resume { id } => println!(
+            "{}",
+            c.post(&format!("/api/sessions/{id}/resume"), json!({}))?["status"]
+        ),
         Cmd::Diff { id } => {
             let d = c.get(&format!("/api/sessions/{id}/diff"))?;
             print_diff(d["checkouts"].as_array().cloned().unwrap_or_default());
         }
         Cmd::Annotate { id, at, comment } => {
             let (file, line) = at.rsplit_once(':').context("use file:line")?;
-            let r = c.post(&format!("/api/sessions/{id}/annotations"), json!({"file": file, "line": line.parse::<u32>()?, "comment": comment.join(" ")}))?;
+            let r = c.post(
+                &format!("/api/sessions/{id}/annotations"),
+                json!({"file": file, "line": line.parse::<u32>()?, "comment": comment.join(" ")}),
+            )?;
             println!("annotation {}", r["annotation"].as_str().unwrap_or(""));
         }
-        Cmd::Feedback { id } => println!("sent as prompt {}", c.post(&format!("/api/sessions/{id}/feedback"), json!({}))?["prompt"].as_str().unwrap_or("")),
+        Cmd::Feedback { id } => println!(
+            "sent as prompt {}",
+            c.post(&format!("/api/sessions/{id}/feedback"), json!({}))?["prompt"]
+                .as_str()
+                .unwrap_or("")
+        ),
         Cmd::Merge { id } => {
-            for r in c.post(&format!("/api/sessions/{id}/merge"), json!({}))?.as_array().into_iter().flatten() {
-                println!("merged {} into {} ({}) as {}", r["branch"].as_str().unwrap_or(""), r["into"].as_str().unwrap_or(""), r["checkout"].as_str().unwrap_or(""), &r["commit"].as_str().unwrap_or("")[..10.min(r["commit"].as_str().unwrap_or("").len())]);
+            for r in c
+                .post(&format!("/api/sessions/{id}/merge"), json!({}))?
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                println!(
+                    "merged {} into {} ({}) as {}",
+                    r["branch"].as_str().unwrap_or(""),
+                    r["into"].as_str().unwrap_or(""),
+                    r["checkout"].as_str().unwrap_or(""),
+                    &r["commit"].as_str().unwrap_or("")
+                        [..10.min(r["commit"].as_str().unwrap_or("").len())]
+                );
             }
         }
         Cmd::Compare { group } => {
             let g = c.get(&format!("/api/groups/{group}"))?;
-            println!("{:<11} {:<12} {:<9} {:>5} {:>6} {:>6} {:>9}  LAST MESSAGE", "ID", "AGENT", "STATUS", "FILES", "+", "-", "COST");
+            println!(
+                "{:<11} {:<12} {:<9} {:>5} {:>6} {:>6} {:>9}  LAST MESSAGE",
+                "ID", "AGENT", "STATUS", "FILES", "+", "-", "COST"
+            );
             for a in g["attempts"].as_array().into_iter().flatten() {
                 let s = &a["session"];
                 println!(
-                    "{:<11} {:<12} {:<9} {:>5} {:>6} {:>6} {:>9}  {}",
+                    "{:<11} {:<26} {:<9} {:>5} {:>6} {:>6} {:>9}  {}",
                     s["id"].as_str().unwrap_or(""),
-                    s["agent"].as_str().unwrap_or(""),
+                    match s["model"].as_str() {
+                        Some(m) => format!("{} · {m}", s["agent"].as_str().unwrap_or("")),
+                        None => s["agent"].as_str().unwrap_or("").to_string(),
+                    },
                     s["status"].as_str().unwrap_or(""),
                     a["files_changed"].to_string(),
                     a["added"].to_string(),
                     a["deleted"].to_string(),
                     format!("${:.4}", s["cost_usd"].as_f64().unwrap_or(0.0)),
-                    adapters::truncate(s["last_text"].as_str().unwrap_or("").lines().next().unwrap_or(""), 60)
+                    adapters::truncate(
+                        s["last_text"]
+                            .as_str()
+                            .unwrap_or("")
+                            .lines()
+                            .next()
+                            .unwrap_or(""),
+                        60
+                    )
                 );
             }
         }
@@ -359,7 +593,12 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
             let row = |name: &str, v: &Value| {
                 println!(
                     "{:<20} {:>4} sessions {:>5} turns {:>9} in {:>8} out  ${:.4}",
-                    name, v["sessions"], v["turns"], v["input_tokens"], v["output_tokens"], v["cost_usd"].as_f64().unwrap_or(0.0)
+                    name,
+                    v["sessions"],
+                    v["turns"],
+                    v["input_tokens"],
+                    v["output_tokens"],
+                    v["cost_usd"].as_f64().unwrap_or(0.0)
                 )
             };
             row("total", &u["total"]);
@@ -373,37 +612,77 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
         Cmd::Accounts(a) => match a {
             AccountsCmd::Ls => {
                 for a in c.get("/api/accounts")?.as_array().into_iter().flatten() {
-                    let cd = if a["cooldown_until"].is_null() { "ready".to_string() } else { "cooling down".to_string() };
-                    println!("{}/{}  {}  {}", a["provider"].as_str().unwrap_or(""), a["name"].as_str().unwrap_or(""), cd, a["dir"].as_str().unwrap_or(""));
+                    let cd = if a["cooldown_until"].is_null() {
+                        "ready".to_string()
+                    } else {
+                        "cooling down".to_string()
+                    };
+                    println!(
+                        "{}/{}  {}  {}",
+                        a["provider"].as_str().unwrap_or(""),
+                        a["name"].as_str().unwrap_or(""),
+                        cd,
+                        a["dir"].as_str().unwrap_or("")
+                    );
                 }
             }
             AccountsCmd::Add { provider, name } => {
                 let r = c.post("/api/accounts", json!({"provider": provider, "name": name}))?;
-                println!("account {provider}/{name} → {}", r["dir"].as_str().unwrap_or(""));
+                println!(
+                    "account {provider}/{name} → {}",
+                    r["dir"].as_str().unwrap_or("")
+                );
                 println!("log in once with that directory as the agent's config dir, e.g. CLAUDE_CONFIG_DIR={} claude", r["dir"].as_str().unwrap_or(""));
             }
         },
-        Cmd::Daemon { .. } | Cmd::Up { .. } | Cmd::Hook { .. } | Cmd::MockAgent { .. } => unreachable!(),
+        Cmd::Daemon { .. }
+        | Cmd::Up { .. }
+        | Cmd::Hook { .. }
+        | Cmd::MockAgent { .. }
+        | Cmd::Agent { .. }
+        | Cmd::Models => unreachable!(),
     }
     Ok(())
 }
 
 fn print_ws(ws: &Value) {
-    println!("{}  {}", ws["id"].as_str().unwrap_or(""), ws["name"].as_str().unwrap_or(""));
+    println!(
+        "{}  {}",
+        ws["id"].as_str().unwrap_or(""),
+        ws["name"].as_str().unwrap_or("")
+    );
     for c in ws["checkouts"].as_array().into_iter().flatten() {
-        let sub = c["subdir"].as_str().map(|s| format!(" (cwd {s})")).unwrap_or_default();
-        println!("  {:<6} {:<16} {}{sub}", c["kind"].as_str().unwrap_or(""), c["name"].as_str().unwrap_or(""), c["path"].as_str().unwrap_or(""));
+        let sub = c["subdir"]
+            .as_str()
+            .map(|s| format!(" (cwd {s})"))
+            .unwrap_or_default();
+        println!(
+            "  {:<6} {:<16} {}{sub}",
+            c["kind"].as_str().unwrap_or(""),
+            c["name"].as_str().unwrap_or(""),
+            c["path"].as_str().unwrap_or("")
+        );
     }
 }
 
 fn print_diff(checkouts: Vec<Value>) {
     for co in checkouts {
-        println!("━━ {} ({}) {}", co["checkout"].as_str().unwrap_or(""), co["kind"].as_str().unwrap_or(""), co["path"].as_str().unwrap_or(""));
+        println!(
+            "━━ {} ({}) {}",
+            co["checkout"].as_str().unwrap_or(""),
+            co["kind"].as_str().unwrap_or(""),
+            co["path"].as_str().unwrap_or("")
+        );
         if let Some(e) = co["error"].as_str() {
             println!("  error: {e}");
         }
         for f in co["files"].as_array().into_iter().flatten() {
-            println!("  {:<40} +{} -{}", f["path"].as_str().unwrap_or(""), f["added"], f["deleted"]);
+            println!(
+                "  {:<40} +{} -{}",
+                f["path"].as_str().unwrap_or(""),
+                f["added"],
+                f["deleted"]
+            );
         }
         print!("{}", co["patch"].as_str().unwrap_or(""));
         println!();
@@ -413,13 +692,28 @@ fn print_diff(checkouts: Vec<Value>) {
 fn fmt_event(e: &Value) -> Option<String> {
     let s = |k: &str| e[k].as_str().unwrap_or("").to_string();
     Some(match e["type"].as_str()? {
-        "created" => format!("● {} session in {} (sandbox {}, permission {})", s("agent"), s("cwd"), s("sandbox"), s("permission")),
+        "created" => format!(
+            "● {} session in {} (sandbox {}, permission {})",
+            s("agent"),
+            s("cwd"),
+            s("sandbox"),
+            s("permission")
+        ),
         "spawned" => format!(
             "▶ started via {}{}{}{}",
             s("protocol"),
-            e["pid"].as_u64().map(|p| format!(" pid {p}")).unwrap_or_default(),
-            e["account"].as_str().map(|a| format!(" account {a}")).unwrap_or_default(),
-            e["resume"].as_str().map(|r| format!(" resuming {r}")).unwrap_or_default()
+            e["pid"]
+                .as_u64()
+                .map(|p| format!(" pid {p}"))
+                .unwrap_or_default(),
+            e["account"]
+                .as_str()
+                .map(|a| format!(" account {a}"))
+                .unwrap_or_default(),
+            e["resume"]
+                .as_str()
+                .map(|r| format!(" resuming {r}"))
+                .unwrap_or_default()
         ),
         "ready" => "· ready".into(),
         "prompt_queued" => format!("› {}", s("text")),
@@ -427,7 +721,11 @@ fn fmt_event(e: &Value) -> Option<String> {
         "prompt_acked" => "  ✓ prompt acknowledged by agent".into(),
         "provider_session" => format!("  agent session {}", s("id")),
         "text" => s("text"),
-        "tool_call" => format!("  ⚙ {} {}", s("name"), adapters::truncate(&e["input"].to_string(), 100)),
+        "tool_call" => format!(
+            "  ⚙ {} {}",
+            s("name"),
+            adapters::truncate(&e["input"].to_string(), 100)
+        ),
         "permission" => format!("  ⚖ {} → {}", s("tool"), s("decision")),
         "output" => {
             let t = adapters::pty::strip_ansi(&s("data"));
@@ -438,20 +736,49 @@ fn fmt_event(e: &Value) -> Option<String> {
         }
         "turn_done" => format!(
             "■ turn {} · {} in / {} out tokens · ${:.4}",
-            if e["ok"].as_bool() == Some(true) { "done" } else { "failed" },
+            if e["ok"].as_bool() == Some(true) {
+                "done"
+            } else {
+                "failed"
+            },
             e["input_tokens"],
             e["output_tokens"],
             e["cost_usd"].as_f64().unwrap_or(0.0)
         ),
-        "rate_limited" => format!("⚠ rate limited ({}): {}", e["account"].as_str().unwrap_or("default"), s("message")),
-        "account_switched" => format!("⇄ switched account {} → {}", e["from"].as_str().unwrap_or("default"), s("to")),
+        "rate_limited" => format!(
+            "⚠ rate limited ({}): {}",
+            e["account"].as_str().unwrap_or("default"),
+            s("message")
+        ),
+        "account_switched" => format!(
+            "⇄ switched account {} → {}",
+            e["from"].as_str().unwrap_or("default"),
+            s("to")
+        ),
         "hook" => format!("  ↪ hook {}", s("name")),
         "annotation" => format!("✎ {}:{} {}", s("file"), e["line"], s("comment")),
-        "feedback_sent" => format!("✎ sent {} annotation(s) as feedback", e["annotations"].as_array().map(|a| a.len()).unwrap_or(0)),
+        "feedback_sent" => format!(
+            "✎ sent {} annotation(s) as feedback",
+            e["annotations"].as_array().map(|a| a.len()).unwrap_or(0)
+        ),
         "stop_requested" => "■ stop requested".into(),
-        "suspended" => format!("⏸ suspended for daemon handoff (generation {})", e["generation"]),
-        "orphaned" => format!("⚠ daemon restarted mid-session (now generation {})", e["generation"]),
-        "exited" => format!("■ exited code {} ({})", e["code"], if e["clean"].as_bool() == Some(true) { "clean" } else { "unclean" }),
+        "suspended" => format!(
+            "⏸ suspended for daemon handoff (generation {})",
+            e["generation"]
+        ),
+        "orphaned" => format!(
+            "⚠ daemon restarted mid-session (now generation {})",
+            e["generation"]
+        ),
+        "exited" => format!(
+            "■ exited code {} ({})",
+            e["code"],
+            if e["clean"].as_bool() == Some(true) {
+                "clean"
+            } else {
+                "unclean"
+            }
+        ),
         "merged" => format!("⇢ merged {} into {}", s("branch"), s("into")),
         "note" => format!("  [{}] {}", s("level"), s("message")),
         _ => return None,
@@ -477,34 +804,59 @@ fn open(c: &Client, id: &str, at: Option<&str>) -> Result<()> {
     let cwd = std::path::PathBuf::from(st["cwd"].as_str().unwrap_or("."));
     let (file, line) = match at {
         Some(a) => match a.rsplit_once(':') {
-            Some((f, l)) if l.parse::<u32>().is_ok() => (Some(f.to_string()), l.parse::<u32>().ok()),
+            Some((f, l)) if l.parse::<u32>().is_ok() => {
+                (Some(f.to_string()), l.parse::<u32>().ok())
+            }
             _ => (Some(a.to_string()), None),
         },
         None => (None, None),
     };
-    let target = file.as_ref().map(|f| cwd.join(f)).unwrap_or_else(|| cwd.clone());
+    let target = file
+        .as_ref()
+        .map(|f| cwd.join(f))
+        .unwrap_or_else(|| cwd.clone());
     let local = c.base.contains("127.0.0.1") || c.base.contains("localhost");
     if !local {
-        let host = c.base.split("//").nth(1).and_then(|h| h.split(':').next()).unwrap_or("host");
-        println!("vscode://vscode-remote/ssh-remote+{host}{}{}", target.display(), line.map(|l| format!(":{l}")).unwrap_or_default());
+        let host = c
+            .base
+            .split("//")
+            .nth(1)
+            .and_then(|h| h.split(':').next())
+            .unwrap_or("host");
+        println!(
+            "vscode://vscode-remote/ssh-remote+{host}{}{}",
+            target.display(),
+            line.map(|l| format!(":{l}")).unwrap_or_default()
+        );
         return Ok(());
     }
     let editor = ["FLEET51_EDITOR", "VISUAL", "EDITOR"]
         .iter()
         .find_map(|k| std::env::var(k).ok())
-        .or_else(|| ["code", "cursor", "zed"].iter().find(|e| manifest::which(e)).map(|e| e.to_string()));
+        .or_else(|| {
+            ["code", "cursor", "zed"]
+                .iter()
+                .find(|e| manifest::which(e))
+                .map(|e| e.to_string())
+        });
     let Some(editor) = editor else {
         println!("{}", target.display());
         return Ok(());
     };
-    let name = std::path::Path::new(&editor).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let name = std::path::Path::new(&editor)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     let mut cmd = std::process::Command::new(&editor);
     match (name.as_str(), line) {
-        ("code" | "cursor" | "codium", Some(l)) => cmd.arg("-g").arg(format!("{}:{l}", target.display())),
+        ("code" | "cursor" | "codium", Some(l)) => {
+            cmd.arg("-g").arg(format!("{}:{l}", target.display()))
+        }
         ("zed", Some(l)) => cmd.arg(format!("{}:{l}", target.display())),
         (_, Some(l)) => cmd.arg(format!("+{l}")).arg(&target),
         (_, None) => cmd.arg(&target),
     };
-    cmd.status().with_context(|| format!("launching {editor}"))?;
+    cmd.status()
+        .with_context(|| format!("launching {editor}"))?;
     Ok(())
 }

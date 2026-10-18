@@ -36,7 +36,11 @@ impl<E: Into<anyhow::Error>> From<E> for ApiErr {
 
 impl IntoResponse for ApiErr {
     fn into_response(self) -> Response {
-        (StatusCode::BAD_REQUEST, Json(json!({"error": self.0.to_string()}))).into_response()
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": self.0.to_string()})),
+        )
+            .into_response()
     }
 }
 
@@ -46,8 +50,15 @@ pub fn router(d: Arc<Daemon>) -> Router {
     let api = Router::new()
         .route("/api/health", get(health))
         .route("/api/agents", get(agents))
-        .route("/api/workspaces", get(list_workspaces).post(create_workspace))
-        .route("/api/workspaces/{id}", axum::routing::delete(delete_workspace))
+        .route("/api/models", get(models))
+        .route(
+            "/api/workspaces",
+            get(list_workspaces).post(create_workspace),
+        )
+        .route(
+            "/api/workspaces/{id}",
+            axum::routing::delete(delete_workspace),
+        )
         .route("/api/workspaces/{id}/diff", get(workspace_diff))
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/fanout", post(fanout))
@@ -70,18 +81,48 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/stream", get(stream))
         .layer(middleware::from_fn_with_state(d.clone(), auth));
     Router::new()
-        .route("/", get(|| async { asset("text/html; charset=utf-8", include_str!("../ui/index.html")) }))
-        .route("/app.js", get(|| async { asset("text/javascript", include_str!("../ui/app.js")) }))
-        .route("/style.css", get(|| async { asset("text/css", include_str!("../ui/style.css")) }))
-        .route("/sw.js", get(|| async { asset("text/javascript", include_str!("../ui/sw.js")) }))
-        .route("/manifest.webmanifest", get(|| async { asset("application/manifest+json", include_str!("../ui/manifest.webmanifest")) }))
-        .route("/icon.svg", get(|| async { asset("image/svg+xml", include_str!("../ui/icon.svg")) }))
+        .route(
+            "/",
+            get(|| async { asset("text/html; charset=utf-8", include_str!("../ui/index.html")) }),
+        )
+        .route(
+            "/app.js",
+            get(|| async { asset("text/javascript", include_str!("../ui/app.js")) }),
+        )
+        .route(
+            "/style.css",
+            get(|| async { asset("text/css", include_str!("../ui/style.css")) }),
+        )
+        .route(
+            "/sw.js",
+            get(|| async { asset("text/javascript", include_str!("../ui/sw.js")) }),
+        )
+        .route(
+            "/manifest.webmanifest",
+            get(|| async {
+                asset(
+                    "application/manifest+json",
+                    include_str!("../ui/manifest.webmanifest"),
+                )
+            }),
+        )
+        .route(
+            "/icon.svg",
+            get(|| async { asset("image/svg+xml", include_str!("../ui/icon.svg")) }),
+        )
         .merge(api)
         .with_state(d)
 }
 
 fn asset(ct: &'static str, body: &'static str) -> Response {
-    ([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, "no-cache")], body).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, ct),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 async fn auth(State(d): D, req: Request, next: Next) -> Response {
@@ -99,12 +140,18 @@ async fn auth(State(d): D, req: Request, next: Next) -> Response {
     if bearer.or(query).as_deref() == Some(d.token.as_str()) {
         next.run(req).await
     } else {
-        (StatusCode::UNAUTHORIZED, Json(json!({"error": "missing or wrong token"}))).into_response()
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "missing or wrong token"})),
+        )
+            .into_response()
     }
 }
 
 async fn health(State(d): D) -> Json<Value> {
-    Json(json!({"name": "Fleet-51", "version": env!("CARGO_PKG_VERSION"), "generation": d.generation, "pid": std::process::id(), "url": d.url}))
+    Json(
+        json!({"name": "Fleet-51", "version": env!("CARGO_PKG_VERSION"), "generation": d.generation, "pid": std::process::id(), "url": d.url}),
+    )
 }
 
 async fn agents(State(d): D) -> Json<Value> {
@@ -122,6 +169,14 @@ async fn agents(State(d): D) -> Json<Value> {
     Json(json!(list))
 }
 
+async fn models() -> Json<Value> {
+    match tokio::task::spawn_blocking(crate::agent::ollama_models).await {
+        Ok(Ok(m)) => Json(json!({"ollama": m})),
+        Ok(Err(e)) => Json(json!({"ollama": [], "error": e.to_string()})),
+        Err(e) => Json(json!({"ollama": [], "error": e.to_string()})),
+    }
+}
+
 #[derive(Deserialize)]
 struct NewWorkspace {
     name: String,
@@ -133,12 +188,17 @@ async fn list_workspaces(State(d): D) -> Json<Value> {
 }
 
 async fn create_workspace(State(d): D, Json(req): Json<NewWorkspace>) -> R<Value> {
-    Ok(Json(json!(workspace::create(&d.home, &req.name, &req.repos)?)))
+    Ok(Json(json!(workspace::create(
+        &d.home, &req.name, &req.repos
+    )?)))
 }
 
 async fn delete_workspace(State(d): D, Path(id): Path<String>) -> R<Value> {
     let ws = workspace::get(&d.home, &id)?;
-    if d.all_sessions().iter().any(|s| s.state().workspace == ws.id && s.is_running()) {
+    if d.all_sessions()
+        .iter()
+        .any(|s| s.state().workspace == ws.id && s.is_running())
+    {
         return Err(anyhow::anyhow!("a running session uses this workspace; stop it first").into());
     }
     workspace::remove(&d.home, &ws.id)?;
@@ -163,7 +223,9 @@ async fn create_session(State(d): D, Json(req): Json<NewSession>) -> R<SessionSt
 async fn fanout(State(d): D, Json(req): Json<Fanout>) -> R<Value> {
     let d2 = d.clone();
     let (group, sessions) = tokio::task::spawn_blocking(move || d2.fanout(req)).await??;
-    Ok(Json(json!({"group": group, "sessions": sessions.iter().map(|s| s.state()).collect::<Vec<_>>()})))
+    Ok(Json(
+        json!({"group": group, "sessions": sessions.iter().map(|s| s.state()).collect::<Vec<_>>()}),
+    ))
 }
 
 async fn get_session(State(d): D, Path(id): Path<String>) -> R<SessionState> {
@@ -184,7 +246,10 @@ async fn session_events(
     let s = d.session(&id)?;
     let rx = s.tx.subscribe();
     let history = s.history(q.since.unwrap_or(0));
-    let last = history.last().map(|e| e.seq).unwrap_or(q.since.unwrap_or(0));
+    let last = history
+        .last()
+        .map(|e| e.seq)
+        .unwrap_or(q.since.unwrap_or(0));
     let follow = q.follow.unwrap_or(true);
     let live = BroadcastStream::new(rx)
         .filter_map(move |r| r.ok().filter(|e| e.seq > last))
@@ -195,7 +260,11 @@ async fn session_events(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-async fn session_history(State(d): D, Path(id): Path<String>, Query(q): Query<EventsQuery>) -> R<Vec<crate::events::Event>> {
+async fn session_history(
+    State(d): D,
+    Path(id): Path<String>,
+    Query(q): Query<EventsQuery>,
+) -> R<Vec<crate::events::Event>> {
     Ok(Json(d.session(&id)?.history(q.since.unwrap_or(0))))
 }
 
@@ -244,7 +313,9 @@ async fn session_diff(State(d): D, Path(id): Path<String>) -> R<Value> {
     let s = d.session(&id)?;
     let ws = d.workspace_of(&s)?;
     let diff = tokio::task::spawn_blocking(move || review::diff(&ws)).await?;
-    Ok(Json(json!({"workspace": s.state().workspace, "checkouts": diff, "annotations": s.state().annotations})))
+    Ok(Json(
+        json!({"workspace": s.state().workspace, "checkouts": diff, "annotations": s.state().annotations}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -257,7 +328,12 @@ struct NewAnnotation {
 async fn annotate(State(d): D, Path(id): Path<String>, Json(a): Json<NewAnnotation>) -> R<Value> {
     let s = d.session(&id)?;
     let aid = short_id("a");
-    s.emit(Ev::Annotation { id: aid.clone(), file: a.file, line: a.line, comment: a.comment });
+    s.emit(Ev::Annotation {
+        id: aid.clone(),
+        file: a.file,
+        line: a.line,
+        comment: a.comment,
+    });
     Ok(Json(json!({"annotation": aid})))
 }
 
@@ -275,7 +351,11 @@ async fn merge(State(d): D, Path(id): Path<String>) -> R<Value> {
 }
 
 async fn compare(State(d): D, Path(id): Path<String>) -> R<Value> {
-    let members: Vec<_> = d.all_sessions().into_iter().filter(|s| s.state().group.as_deref() == Some(id.as_str())).collect();
+    let members: Vec<_> = d
+        .all_sessions()
+        .into_iter()
+        .filter(|s| s.state().group.as_deref() == Some(id.as_str()))
+        .collect();
     if members.is_empty() {
         return Err(anyhow::anyhow!("no group {id}").into());
     }
@@ -289,7 +369,11 @@ async fn compare(State(d): D, Path(id): Path<String>) -> R<Value> {
                     .map(|ws| {
                         let diffs = review::diff(&ws);
                         let files: Vec<_> = diffs.iter().flat_map(|c| c.files.iter()).collect();
-                        (files.len(), files.iter().map(|f| f.added).sum::<u64>(), files.iter().map(|f| f.deleted).sum::<u64>())
+                        (
+                            files.len(),
+                            files.iter().map(|f| f.added).sum::<u64>(),
+                            files.iter().map(|f| f.deleted).sum::<u64>(),
+                        )
                     })
                     .unwrap_or((0, 0, 0));
                 json!({"session": st, "files_changed": files, "added": added, "deleted": deleted})
@@ -303,7 +387,8 @@ async fn compare(State(d): D, Path(id): Path<String>) -> R<Value> {
 async fn usage(State(d): D) -> Json<Value> {
     let mut by_agent = serde_json::Map::new();
     let mut by_account = serde_json::Map::new();
-    let mut total = json!({"sessions": 0, "turns": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0});
+    let mut total =
+        json!({"sessions": 0, "turns": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0});
     fn add(v: &mut Value, st: &SessionState) {
         v["sessions"] = json!(v["sessions"].as_u64().unwrap_or(0) + 1);
         v["turns"] = json!(v["turns"].as_u64().unwrap_or(0) + st.turns as u64);
@@ -333,7 +418,9 @@ struct NewAccount {
 
 async fn add_account(State(d): D, Json(a): Json<NewAccount>) -> R<Value> {
     let dir = accounts::add(&d.home, &a.provider, &a.name)?;
-    Ok(Json(json!({"provider": a.provider, "name": a.name, "dir": dir})))
+    Ok(Json(
+        json!({"provider": a.provider, "name": a.name, "dir": dir}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -346,7 +433,10 @@ struct HookCall {
 
 async fn hook(State(d): D, Json(h): Json<HookCall>) -> R<Value> {
     let s = d.session(&h.session)?;
-    s.emit(Ev::Hook { name: h.name, payload: h.payload });
+    s.emit(Ev::Hook {
+        name: h.name,
+        payload: h.payload,
+    });
     Ok(Json(json!({"ok": true})))
 }
 

@@ -19,14 +19,27 @@ pub struct Mounts<'a> {
     pub exe: &'a Path,
 }
 
-pub fn prefix(tier: &str, m: &Manifest, mounts: &Mounts, env_keys: &[String], cwd: &Path, tty: bool) -> Result<Vec<String>> {
+pub fn prefix(
+    tier: &str,
+    m: &Manifest,
+    mounts: &Mounts,
+    env_keys: &[String],
+    cwd: &Path,
+    tty: bool,
+) -> Result<Vec<String>> {
     let network = match tier {
         "" | "none" => return Ok(vec![]),
         "docker" => "host",
         "docker-offline" => "none",
-        other => bail!("unknown sandbox {other}; choose one of {}", TIERS.join(", ")),
+        other => bail!(
+            "unknown sandbox {other}; choose one of {}",
+            TIERS.join(", ")
+        ),
     };
-    let image = m.sandbox_image.clone().unwrap_or_else(|| "debian:stable-slim".into());
+    let image = m
+        .sandbox_image
+        .clone()
+        .unwrap_or_else(|| "debian:stable-slim".into());
     let mut v: Vec<String> = vec!["docker".into(), "run".into(), "--rm".into(), "-i".into()];
     if tty {
         v.push("-t".into());
@@ -37,7 +50,10 @@ pub fn prefix(tier: &str, m: &Manifest, mounts: &Mounts, env_keys: &[String], cw
     }
     let mut mount = |p: &Path, ro: bool| {
         let s = p.display().to_string();
-        v.extend(["-v".into(), format!("{s}:{s}{}", if ro { ":ro" } else { "" })]);
+        v.extend([
+            "-v".into(),
+            format!("{s}:{s}{}", if ro { ":ro" } else { "" }),
+        ]);
     };
     mount(mounts.workspace, false);
     for p in &mounts.extra {
@@ -57,6 +73,12 @@ pub fn prefix(tier: &str, m: &Manifest, mounts: &Mounts, env_keys: &[String], cw
 }
 
 fn id_flag() -> Option<String> {
-    let run = |a: &str| std::process::Command::new("id").arg(a).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let run = |a: &str| {
+        std::process::Command::new("id")
+            .arg(a)
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
     Some(format!("{}:{}", run("-u")?, run("-g")?)).filter(|s| s != ":")
 }

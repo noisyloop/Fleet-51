@@ -13,6 +13,11 @@ const BUILTIN: &[(&str, &str)] = &[
     ("codex", include_str!("../agents/codex.toml")),
     ("gemini", include_str!("../agents/gemini.toml")),
     ("opencode", include_str!("../agents/opencode.toml")),
+    ("ollama", include_str!("../agents/ollama.toml")),
+    (
+        "openai-compatible",
+        include_str!("../agents/openai-compatible.toml"),
+    ),
     ("mock-claude", include_str!("../agents/mock-claude.toml")),
     ("mock-codex", include_str!("../agents/mock-codex.toml")),
     ("mock-acp", include_str!("../agents/mock-acp.toml")),
@@ -97,11 +102,15 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn provider(&self) -> String {
-        self.account_provider.clone().unwrap_or_else(|| self.name.clone())
+        self.account_provider
+            .clone()
+            .unwrap_or_else(|| self.name.clone())
     }
 
     pub fn rate_limit_re(&self) -> Option<regex::Regex> {
-        self.rate_limit_pattern.as_deref().and_then(|p| regex::Regex::new(p).ok())
+        self.rate_limit_pattern
+            .as_deref()
+            .and_then(|p| regex::Regex::new(p).ok())
     }
 
     pub fn available(&self) -> bool {
@@ -173,7 +182,9 @@ mod tests {
 
     #[test]
     fn builtins_parse() {
-        let home = Home { root: std::env::temp_dir().join("fleet51-manifest-test-none") };
+        let home = Home {
+            root: std::env::temp_dir().join("fleet51-manifest-test-none"),
+        };
         let all = load_all(&home);
         assert_eq!(all.len(), BUILTIN.len());
         let claude = all.iter().find(|m| m.name == "claude").unwrap();
