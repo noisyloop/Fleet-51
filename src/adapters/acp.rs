@@ -24,14 +24,17 @@ impl Rpc {
     async fn request(&mut self, method: &str, params: Value) -> u64 {
         self.next += 1;
         let id = self.next;
-        self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).await;
+        self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
+            .await;
         id
     }
     async fn respond(&mut self, id: Value, result: Value) {
-        self.send(json!({"jsonrpc": "2.0", "id": id, "result": result})).await;
+        self.send(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+            .await;
     }
     async fn respond_err(&mut self, id: Value, code: i64, message: &str) {
-        self.send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})).await;
+        self.send(json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}))
+            .await;
     }
 }
 
@@ -48,7 +51,10 @@ pub async fn run(spec: Spec, s: Arc<Session>, mut rx: UnboundedReceiver<Cmd>) ->
         Err(e) => return Exit::SpawnFailed(format!("{}: {e}", spec.argv[0])),
     };
     spec.spawned(&s, child.id(), &spec.argv);
-    let mut rpc = Rpc { w: child.stdin.take().expect("piped stdin"), next: 0 };
+    let mut rpc = Rpc {
+        w: child.stdin.take().expect("piped stdin"),
+        next: 0,
+    };
     let re = spec.manifest.rate_limit_re();
     let stderr_hit = watch_stderr(&s, child.stderr.take(), re.clone());
     let mut lines = BufReader::new(child.stdout.take().expect("piped stdout")).lines();
@@ -197,7 +203,9 @@ pub async fn run(spec: Spec, s: Arc<Session>, mut rx: UnboundedReceiver<Cmd>) ->
 
 fn flush(s: &Session, chunk: &mut String) {
     if !chunk.trim().is_empty() {
-        s.emit(Ev::Text { text: std::mem::take(chunk) });
+        s.emit(Ev::Text {
+            text: std::mem::take(chunk),
+        });
     }
     chunk.clear();
 }

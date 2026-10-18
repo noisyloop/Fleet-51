@@ -217,7 +217,7 @@ Every principle above has a working first version. They are exercised end-to-end
 | 5. Crash-only lifecycle | Generation-numbered `daemon.json`. A new daemon asks the old one to suspend and exit, then resumes its sessions. After a crash, leftover agent processes are matched by `FLEET51_SESSION` and reaped. | `src/daemon.rs` |
 | 6. Workspace = set of checkouts | git worktrees, jj workspaces, plain folders (diffed through a shadow git dir), several repos at once, and monorepo subfolders. | `src/workspace.rs` |
 | 7. Review, not an IDE | Cross-repo diff, line annotations turned into one feedback prompt, fan-out comparison, merge of the winner, `fleet51 open` in your own editor. | `src/review.rs` |
-| 8. Agents are data | TOML manifests; drop one in `~/.fleet51/agents/` to add or override an agent. | `agents/`, `src/manifest.rs` |
+| 8. Agents are data | Built-in coding agent for Ollama and other OpenAI-compatible servers; fan-out across models (`--models`). TOML manifests; drop one in `~/.fleet51/agents/` to add or override an agent. | `agents/`, `src/manifest.rs` |
 | 9. Isolation tiers | `none`, `docker` (host network), and `docker-offline`, with checkouts mounted at the same paths. | `src/sandbox.rs` |
 | 10. Accounts and budgets | Isolated config dir per account, `--account auto`, cooldown and failover on rate limits, usage by agent and account. | `src/accounts.rs` |
 | 11. Privacy default | No telemetry code at all. | |
@@ -225,7 +225,10 @@ Every principle above has a working first version. They are exercised end-to-end
 
 Known gaps in the demo:
 
-- Only the mock agents are tested end to end. The real Claude, Codex, Gemini and OpenCode
+- The Ollama agent has run against real qwen3 models (0.6B and 1.7B on CPU). It makes real tool
+  calls, but these small models were slow and their fixes poor; the model, not the plumbing,
+  is the limit there.
+- Apart from that, only the mock agents are tested end to end. The real Claude, Codex, Gemini and OpenCode
   manifests follow their documented flags but have not been run against those CLIs here.
 - A daemon handoff restarts agents through their resume flags instead of adopting the live
   processes. A per-session shim that outlives the daemon would remove even that restart.

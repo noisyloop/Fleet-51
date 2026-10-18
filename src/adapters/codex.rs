@@ -48,7 +48,9 @@ pub async fn run(spec: Spec, s: Arc<Session>, mut rx: UnboundedReceiver<Cmd>) ->
 
 fn turn_argv(spec: &Spec, thread: Option<&str>, prompt: &str) -> Vec<String> {
     let template = match thread {
-        Some(_) if !spec.manifest.resume_prompt_args.is_empty() => &spec.manifest.resume_prompt_args,
+        Some(_) if !spec.manifest.resume_prompt_args.is_empty() => {
+            &spec.manifest.resume_prompt_args
+        }
         _ => &spec.manifest.prompt_args,
     };
     let mut argv = spec.argv.clone();
@@ -56,7 +58,10 @@ fn turn_argv(spec: &Spec, thread: Option<&str>, prompt: &str) -> Vec<String> {
         if a == "{flags}" {
             argv.extend(spec.flags.iter().cloned());
         } else {
-            argv.push(expand(a, &[("session", thread.unwrap_or_default()), ("prompt", prompt)]));
+            argv.push(expand(
+                a,
+                &[("session", thread.unwrap_or_default()), ("prompt", prompt)],
+            ));
         }
     }
     argv
@@ -148,7 +153,13 @@ async fn turn(
         }
     }
     if !finished {
-        s.emit(Ev::TurnDone { ok: false, summary: Some(format!("turn process exited with {code:?}")), input_tokens: 0, output_tokens: 0, cost_usd: 0.0 });
+        s.emit(Ev::TurnDone {
+            ok: false,
+            summary: Some(format!("turn process exited with {code:?}")),
+            input_tokens: 0,
+            output_tokens: 0,
+            cost_usd: 0.0,
+        });
     }
     TurnEnd::Done
 }
@@ -157,12 +168,20 @@ fn item(s: &Session, it: &Value) {
     match it["type"].as_str() {
         Some("agent_message") => {
             if let Some(t) = it["text"].as_str() {
-                s.emit(Ev::Text { text: t.to_string() });
+                s.emit(Ev::Text {
+                    text: t.to_string(),
+                });
             }
         }
-        Some("command_execution") => s.emit_tool("shell", json!({"command": it["command"], "exit_code": it["exit_code"]})),
+        Some("command_execution") => s.emit_tool(
+            "shell",
+            json!({"command": it["command"], "exit_code": it["exit_code"]}),
+        ),
         Some("file_change") => s.emit_tool("edit", json!({"changes": it["changes"]})),
-        Some("mcp_tool_call") => s.emit_tool(it["tool"].as_str().unwrap_or("mcp"), it["arguments"].clone()),
+        Some("mcp_tool_call") => s.emit_tool(
+            it["tool"].as_str().unwrap_or("mcp"),
+            it["arguments"].clone(),
+        ),
         _ => {}
     }
 }

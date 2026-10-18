@@ -12,7 +12,9 @@ impl Home {
         let root = std::env::var_os("FLEET51_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| ".".into());
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| ".".into());
                 home.join(".fleet51")
             });
         Home { root }
@@ -68,7 +70,10 @@ pub fn write_private(path: &Path, contents: &str) -> anyhow::Result<()> {
 }
 
 pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 pub fn short_id(prefix: &str) -> String {
@@ -81,7 +86,10 @@ pub fn pid_alive(pid: u32) -> bool {
     if cfg!(target_os = "linux") {
         // A zombie still has a /proc entry but is not running.
         match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Ok(stat) => !stat.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')),
+            Ok(stat) => !stat
+                .rsplit(')')
+                .next()
+                .is_some_and(|rest| rest.trim_start().starts_with('Z')),
             Err(_) => false,
         }
     } else {
@@ -91,11 +99,15 @@ pub fn pid_alive(pid: u32) -> bool {
 
 /// True only if `pid` is a process Fleet-51 launched for `session` (guards against pid reuse).
 pub fn pid_belongs_to_session(pid: u32, session: &str) -> bool {
-    let Ok(env) = std::fs::read(format!("/proc/{pid}/environ")) else { return false };
+    let Ok(env) = std::fs::read(format!("/proc/{pid}/environ")) else {
+        return false;
+    };
     let needle = format!("FLEET51_SESSION={session}");
     env.split(|b| *b == 0).any(|kv| kv == needle.as_bytes())
 }
 
 pub fn kill_pid(pid: u32) {
-    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+    let _ = std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status();
 }

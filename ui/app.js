@@ -156,6 +156,7 @@ function updatePane(id) {
   p.resumeBtn.hidden = live;
   p.meta.replaceChildren(...[
     el('span', { text: s.agent }),
+    s.model ? el('span', { text: 'model ' + s.model }) : null,
     el('span', { text: 'sandbox ' + s.sandbox }),
     el('span', { text: 'perm ' + s.permission }),
     s.account ? el('span', { text: 'account ' + s.account }) : null,
@@ -232,10 +233,13 @@ function sessionForm(fanout) {
   const sandbox = el('select', {}, ['none', 'docker', 'docker-offline'].map((v) => el('option', { value: v }, v)));
   const perm = el('select', {}, ['auto', 'default', 'plan', 'yolo'].map((v) => el('option', { value: v }, v)));
   const account = el('input', { placeholder: 'default login, an account name, or auto' });
-  const model = el('input', { placeholder: 'agent default' });
+  const model = el('input', { placeholder: 'agent default', list: 'model-list' });
+  const models = el('input', { placeholder: 'optional, comma-separated: qwen3:1.7b, llama3.2:3b', list: 'model-list' });
+  const modelList = el('datalist', { id: 'model-list' });
+  api('/api/models').then((r) => modelList.replaceChildren(...(r.ollama || []).map((m) => el('option', { value: m })))).catch(() => {});
   const pick = fanout
-    ? el('div', { class: 'checks' }, agents.map((a) => el('label', {}, el('input', { type: 'checkbox', value: a.name, checked: a.name.startsWith('mock-claude') || a.name === 'mock-codex' }), a.name)))
-    : el('select', {}, agentOptions(agents.find((a) => a.available && !a.name.startsWith('mock'))?.name || 'mock-claude'));
+    ? el('div', { class: 'checks' }, agents.map((a) => el('label', {}, el('input', { type: 'checkbox', value: a.name, checked: a.name === 'ollama' }), a.name)))
+    : el('select', {}, agentOptions('ollama'));
   const n = el('input', { type: 'number', min: 1, max: 8, value: 1 });
   const submit = async () => {
     const repoList = repos.value.split('\n').map((s) => s.trim()).filter(Boolean).map((path) => ({ path }));
@@ -243,7 +247,8 @@ function sessionForm(fanout) {
     try {
       if (fanout) {
         const chosen = [...pick.querySelectorAll('input:checked')].map((i) => i.value);
-        const r = await post('/api/fanout', { agents: chosen, repos: repoList, prompt: prompt.value, n: +n.value || 1, sandbox: sandbox.value, permission: perm.value, account: account.value || null });
+        const modelNames = models.value.split(',').map((m) => m.trim()).filter(Boolean);
+        const r = await post('/api/fanout', { agents: chosen, models: modelNames, repos: repoList, prompt: prompt.value, n: +n.value || 1, sandbox: sandbox.value, permission: perm.value, account: account.value || null });
         await refresh();
         for (const s of r.sessions) openPane(s.id);
       } else {
@@ -260,7 +265,8 @@ function sessionForm(fanout) {
       field('Repos or folders (one per line; several = multi-repo workspace; a monorepo subfolder is fine)', repos, true),
       field('Prompt', prompt, true),
       field('Sandbox', sandbox), field('Permission', perm),
-      field('Account', account), fanout ? field('Attempts per agent', n) : field('Model', model)),
+      field('Account', account), fanout ? field('Attempts per agent and model', n) : field('Model', model),
+      fanout ? field('Models (each checked agent runs once per model)', models, true) : null, modelList),
     el('div', { class: 'row-actions' }, el('button', { type: 'button', class: 'primary', onclick: submit }, fanout ? 'Fan out' : 'Start')));
 }
 
@@ -329,7 +335,7 @@ async function compareDialog(group) {
   const rows = g.attempts.map((a) => {
     const s = a.session;
     return el('tr', {},
-      el('td', {}, el('span', { class: 'dot ' + s.status, style: 'display:inline-block;margin-right:6px' }), s.agent, el('div', { class: 'muted', text: s.id })),
+      el('td', {}, el('span', { class: 'dot ' + s.status, style: 'display:inline-block;margin-right:6px' }), s.agent, s.model ? ` · ${s.model}` : '', el('div', { class: 'muted', text: s.id })),
       el('td', { text: s.status.replace('_', ' ') }),
       el('td', { class: 'num', text: a.files_changed }),
       el('td', { class: 'num', text: `+${a.added} −${a.deleted}` }),

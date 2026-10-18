@@ -24,13 +24,19 @@ fn pause() {
 fn account() -> String {
     std::env::var("MOCK_ACCOUNT_DIR")
         .ok()
-        .and_then(|d| Path::new(&d).file_name().map(|n| n.to_string_lossy().to_string()))
+        .and_then(|d| {
+            Path::new(&d)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+        })
         .unwrap_or_else(|| "default".into())
 }
 
 fn rate_limited() -> bool {
     let acct = account();
-    std::env::var("FLEET51_MOCK_RATE_LIMIT").map(|v| v.split(',').any(|a| a.trim() == acct)).unwrap_or(false)
+    std::env::var("FLEET51_MOCK_RATE_LIMIT")
+        .map(|v| v.split(',').any(|a| a.trim() == acct))
+        .unwrap_or(false)
 }
 
 fn crash_once(prompt: &str) {
@@ -53,7 +59,11 @@ fn work(prompt: &str) -> String {
         .filter(|p| p.join(".git").exists())
         .collect();
     if !Path::new(".git").exists() && !repos.is_empty() {
-        return repos.iter().map(|r| work_in(r, prompt)).collect::<Vec<_>>().join(", ");
+        return repos
+            .iter()
+            .map(|r| work_in(r, prompt))
+            .collect::<Vec<_>>()
+            .join(", ");
     }
     work_in(Path::new(""), prompt)
 }
@@ -65,30 +75,56 @@ fn work_in(dir: &Path, prompt: &str) -> String {
         .collect::<Vec<_>>()
         .join("-")
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
-    let slug = if slug.trim_matches('-').is_empty() { "note".to_string() } else { slug.trim_matches('-').to_string() };
+    let slug = if slug.trim_matches('-').is_empty() {
+        "note".to_string()
+    } else {
+        slug.trim_matches('-').to_string()
+    };
     let path = dir.join("mock").join(format!("{slug}.md"));
     let _ = std::fs::create_dir_all(dir.join("mock"));
     let mut text = std::fs::read_to_string(&path).unwrap_or_else(|_| format!("# {slug}\n\n"));
-    text.push_str(&format!("- [{}] {}\n", account(), prompt.lines().next().unwrap_or("")));
+    text.push_str(&format!(
+        "- [{}] {}\n",
+        account(),
+        prompt.lines().next().unwrap_or("")
+    ));
     let _ = std::fs::write(&path, text);
     path.display().to_string()
 }
 
 fn run_stop_hooks(settings: Option<&str>) {
-    let Some(v) = settings.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { return };
+    let Some(v) = settings
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    else {
+        return;
+    };
     for group in v["hooks"]["Stop"].as_array().into_iter().flatten() {
         for h in group["hooks"].as_array().into_iter().flatten() {
             if let Some(cmd) = h["command"].as_str() {
-                let _ = std::process::Command::new("sh").arg("-c").arg(cmd).stdin(std::process::Stdio::null()).status();
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd)
+                    .stdin(std::process::Stdio::null())
+                    .status();
             }
         }
     }
 }
 
 fn flag(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 pub fn run(protocol: &str, args: Vec<String>) -> Result<()> {
@@ -109,41 +145,63 @@ fn claude(args: &[String]) -> Result<()> {
     let mut turn = 0;
     for line in std::io::stdin().lock().lines() {
         let line = line?;
-        let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         if msg["type"] != "user" {
             continue;
         }
         let text = match &msg["message"]["content"] {
             Value::String(s) => s.clone(),
-            Value::Array(b) => b.iter().filter_map(|x| x["text"].as_str()).collect::<Vec<_>>().join("\n"),
+            Value::Array(b) => b
+                .iter()
+                .filter_map(|x| x["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
             _ => String::new(),
         };
         if !started {
             started = true;
-            out(json!({"type": "system", "subtype": "init", "session_id": session, "model": "mock", "cwd": std::env::current_dir()?}));
+            out(
+                json!({"type": "system", "subtype": "init", "session_id": session, "model": "mock", "cwd": std::env::current_dir()?}),
+            );
         }
         if replay {
-            out(json!({"type": "user", "message": msg["message"], "session_id": session, "isReplay": true}));
+            out(
+                json!({"type": "user", "message": msg["message"], "session_id": session, "isReplay": true}),
+            );
         }
         turn += 1;
         pause();
         if rate_limited() {
-            out(json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": session,
-                       "result": format!("Mock usage limit reached for account {} (rate limit)", account())}));
+            out(
+                json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": session,
+                       "result": format!("Mock usage limit reached for account {} (rate limit)", account())}),
+            );
             continue;
         }
-        out(json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [{"type": "text", "text": format!("On it ({}): {}", account(), text.lines().next().unwrap_or(""))}]}}));
+        out(
+            json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [{"type": "text", "text": format!("On it ({}): {}", account(), text.lines().next().unwrap_or(""))}]}}),
+        );
         pause();
         crash_once(&text);
         let file = work(&text);
-        out(json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("t{turn}"), "name": "Write", "input": {"file_path": file}}]}}));
+        out(
+            json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("t{turn}"), "name": "Write", "input": {"file_path": file}}]}}),
+        );
         pause();
-        out(json!({"type": "user", "session_id": session, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("t{turn}"), "content": "ok"}]}}));
+        out(
+            json!({"type": "user", "session_id": session, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("t{turn}"), "content": "ok"}]}}),
+        );
         let reply = format!("Done. Updated {file}.");
-        out(json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [{"type": "text", "text": reply}]}}));
+        out(
+            json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [{"type": "text", "text": reply}]}}),
+        );
         run_stop_hooks(settings.as_deref());
-        out(json!({"type": "result", "subtype": "success", "is_error": false, "session_id": session, "result": reply,
-                   "usage": {"input_tokens": 120 + text.len(), "output_tokens": 48}, "total_cost_usd": 0.0012}));
+        out(
+            json!({"type": "result", "subtype": "success", "is_error": false, "session_id": session, "result": reply,
+                   "usage": {"input_tokens": 120 + text.len(), "output_tokens": 48}, "total_cost_usd": 0.0012}),
+        );
     }
     Ok(())
 }
@@ -155,17 +213,29 @@ fn codex(args: &[String]) -> Result<()> {
     out(json!({"type": "turn.started"}));
     pause();
     if rate_limited() {
-        out(json!({"type": "turn.failed", "error": {"message": format!("rate limit reached for account {}", account())}}));
+        out(
+            json!({"type": "turn.failed", "error": {"message": format!("rate limit reached for account {}", account())}}),
+        );
         std::process::exit(1);
     }
-    out(json!({"type": "item.completed", "item": {"id": "i0", "type": "agent_message", "text": format!("Planning ({}): {}", account(), prompt.lines().next().unwrap_or(""))}}));
+    out(
+        json!({"type": "item.completed", "item": {"id": "i0", "type": "agent_message", "text": format!("Planning ({}): {}", account(), prompt.lines().next().unwrap_or(""))}}),
+    );
     pause();
     crash_once(&prompt);
-    out(json!({"type": "item.completed", "item": {"id": "i1", "type": "command_execution", "command": "ls", "exit_code": 0}}));
+    out(
+        json!({"type": "item.completed", "item": {"id": "i1", "type": "command_execution", "command": "ls", "exit_code": 0}}),
+    );
     let file = work(&prompt);
-    out(json!({"type": "item.completed", "item": {"id": "i2", "type": "file_change", "changes": [{"path": file, "kind": "update"}]}}));
-    out(json!({"type": "item.completed", "item": {"id": "i3", "type": "agent_message", "text": format!("Done. Updated {file}.")}}));
-    out(json!({"type": "turn.completed", "usage": {"input_tokens": 200 + prompt.len(), "cached_input_tokens": 0, "output_tokens": 64}}));
+    out(
+        json!({"type": "item.completed", "item": {"id": "i2", "type": "file_change", "changes": [{"path": file, "kind": "update"}]}}),
+    );
+    out(
+        json!({"type": "item.completed", "item": {"id": "i3", "type": "agent_message", "text": format!("Done. Updated {file}.")}}),
+    );
+    out(
+        json!({"type": "turn.completed", "usage": {"input_tokens": 200 + prompt.len(), "cached_input_tokens": 0, "output_tokens": 64}}),
+    );
     Ok(())
 }
 
@@ -174,34 +244,60 @@ fn acp() -> Result<()> {
     let mut lines = stdin.lock().lines();
     let mut next_req = 0;
     while let Some(line) = lines.next() {
-        let Ok(msg) = serde_json::from_str::<Value>(&line?) else { continue };
+        let Ok(msg) = serde_json::from_str::<Value>(&line?) else {
+            continue;
+        };
         let id = msg["id"].clone();
         match msg["method"].as_str() {
-            Some("initialize") => out(json!({"jsonrpc": "2.0", "id": id, "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}}})),
-            Some("session/new") => out(json!({"jsonrpc": "2.0", "id": id, "result": {"sessionId": uuid::Uuid::new_v4().to_string()}})),
+            Some("initialize") => out(
+                json!({"jsonrpc": "2.0", "id": id, "result": {"protocolVersion": 1, "agentCapabilities": {"loadSession": true}}}),
+            ),
+            Some("session/new") => out(
+                json!({"jsonrpc": "2.0", "id": id, "result": {"sessionId": uuid::Uuid::new_v4().to_string()}}),
+            ),
             Some("session/load") => out(json!({"jsonrpc": "2.0", "id": id, "result": null})),
             Some("session/prompt") => {
                 let sid = msg["params"]["sessionId"].clone();
-                let text: String = msg["params"]["prompt"].as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n");
-                let update = |u: Value| out(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": u}}));
+                let text: String = msg["params"]["prompt"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|b| b["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let update = |u: Value| {
+                    out(
+                        json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": u}}),
+                    )
+                };
                 if rate_limited() {
-                    out(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "rate limit reached"}}));
+                    out(
+                        json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": "rate limit reached"}}),
+                    );
                     continue;
                 }
-                update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "On it: "}}));
-                update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": format!("{}\n", text.lines().next().unwrap_or(""))}}));
+                update(
+                    json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "On it: "}}),
+                );
+                update(
+                    json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": format!("{}\n", text.lines().next().unwrap_or(""))}}),
+                );
                 pause();
                 crash_once(&text);
                 next_req += 1;
                 let perm_id = format!("perm-{next_req}");
-                out(json!({"jsonrpc": "2.0", "id": perm_id, "method": "session/request_permission", "params": {
-                    "sessionId": sid,
-                    "toolCall": {"toolCallId": "w1", "title": "Write mock notes", "kind": "edit"},
-                    "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]
-                }}));
+                out(
+                    json!({"jsonrpc": "2.0", "id": perm_id, "method": "session/request_permission", "params": {
+                        "sessionId": sid,
+                        "toolCall": {"toolCallId": "w1", "title": "Write mock notes", "kind": "edit"},
+                        "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"}, {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]
+                    }}),
+                );
                 let mut allowed = false;
                 for l in lines.by_ref() {
-                    let Ok(r) = serde_json::from_str::<Value>(&l?) else { continue };
+                    let Ok(r) = serde_json::from_str::<Value>(&l?) else {
+                        continue;
+                    };
                     if r["id"] == perm_id.as_str() {
                         allowed = r["result"]["outcome"]["optionId"] == "allow";
                         break;
@@ -209,14 +305,22 @@ fn acp() -> Result<()> {
                 }
                 if allowed {
                     let file = work(&text);
-                    update(json!({"sessionUpdate": "tool_call", "toolCallId": "w1", "title": format!("Write {file}"), "kind": "edit", "status": "completed", "rawInput": {"path": file}}));
-                    update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": format!("Done. Updated {file}.")}}));
+                    update(
+                        json!({"sessionUpdate": "tool_call", "toolCallId": "w1", "title": format!("Write {file}"), "kind": "edit", "status": "completed", "rawInput": {"path": file}}),
+                    );
+                    update(
+                        json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": format!("Done. Updated {file}.")}}),
+                    );
                 } else {
-                    update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Permission denied, so I made no changes."}}));
+                    update(
+                        json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Permission denied, so I made no changes."}}),
+                    );
                 }
                 out(json!({"jsonrpc": "2.0", "id": id, "result": {"stopReason": "end_turn"}}));
             }
-            Some(_) if !id.is_null() => out(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "unsupported"}})),
+            Some(_) if !id.is_null() => out(
+                json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "unsupported"}}),
+            ),
             _ => {}
         }
     }

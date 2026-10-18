@@ -17,19 +17,33 @@ use crate::session::Session;
 pub fn strip_ansi(s: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let re = RE.get_or_init(|| {
-        Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-Z\\-_]").unwrap()
+        Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-Z\\-_]")
+            .unwrap()
     });
     re.replace_all(s, "").replace('\r', "")
 }
 
 pub async fn run(spec: Spec, s: Arc<Session>, mut rx: mpsc::UnboundedReceiver<Cmd>) -> Exit {
     let rules = spec.manifest.pty.clone();
-    let ready_re = rules.as_ref().and_then(|r| Regex::new(&r.ready_pattern).ok());
-    let idle_re = rules.as_ref().and_then(|r| r.idle_pattern.as_deref()).and_then(|p| Regex::new(p).ok());
-    let submit = rules.as_ref().map(|r| r.submit.clone()).unwrap_or_else(|| "\r".into());
+    let ready_re = rules
+        .as_ref()
+        .and_then(|r| Regex::new(&r.ready_pattern).ok());
+    let idle_re = rules
+        .as_ref()
+        .and_then(|r| r.idle_pattern.as_deref())
+        .and_then(|p| Regex::new(p).ok());
+    let submit = rules
+        .as_ref()
+        .map(|r| r.submit.clone())
+        .unwrap_or_else(|| "\r".into());
 
     let argv = spec.wrap(&spec.argv);
-    let pair = match native_pty_system().openpty(PtySize { rows: 40, cols: 120, pixel_width: 0, pixel_height: 0 }) {
+    let pair = match native_pty_system().openpty(PtySize {
+        rows: 40,
+        cols: 120,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
         Ok(p) => p,
         Err(e) => return Exit::SpawnFailed(format!("openpty: {e}")),
     };
@@ -92,7 +106,9 @@ pub async fn run(spec: Spec, s: Arc<Session>, mut rx: mpsc::UnboundedReceiver<Cm
     let code = loop {
         if ready && busy.is_none() {
             if let Some((id, text)) = queue.pop_front() {
-                let ok = writer.write_all(text.as_bytes()).is_ok() && writer.write_all(submit.as_bytes()).is_ok() && writer.flush().is_ok();
+                let ok = writer.write_all(text.as_bytes()).is_ok()
+                    && writer.write_all(submit.as_bytes()).is_ok()
+                    && writer.flush().is_ok();
                 if ok {
                     s.emit(Ev::PromptDelivered { id: id.clone() });
                     let needle: String = text.chars().take(24).collect();
@@ -149,7 +165,9 @@ pub async fn run(spec: Spec, s: Arc<Session>, mut rx: mpsc::UnboundedReceiver<Cm
     };
     // Drain whatever the agent printed before exiting.
     while let Ok(chunk) = orx.try_recv() {
-        s.emit(Ev::Output { data: String::from_utf8_lossy(&chunk).to_string() });
+        s.emit(Ev::Output {
+            data: String::from_utf8_lossy(&chunk).to_string(),
+        });
     }
     outcome.unwrap_or(Exit::Exited(code))
 }

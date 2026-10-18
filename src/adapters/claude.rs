@@ -85,17 +85,28 @@ fn is_replayed_prompt(v: &Value) -> bool {
     }
     match &v["message"]["content"] {
         Value::String(_) => true,
-        Value::Array(blocks) => blocks.iter().any(|b| b["type"] == "text") && !blocks.iter().any(|b| b["type"] == "tool_result"),
+        Value::Array(blocks) => {
+            blocks.iter().any(|b| b["type"] == "text")
+                && !blocks.iter().any(|b| b["type"] == "tool_result")
+        }
         _ => false,
     }
 }
 
-fn handle_line(s: &Session, line: &str, inflight: &mut VecDeque<String>, re: Option<&regex::Regex>) -> Option<Exit> {
+fn handle_line(
+    s: &Session,
+    line: &str,
+    inflight: &mut VecDeque<String>,
+    re: Option<&regex::Regex>,
+) -> Option<Exit> {
     let v: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(_) => {
             if !line.trim().is_empty() {
-                s.emit(Ev::Note { level: "stdout".into(), message: line.to_string() });
+                s.emit(Ev::Note {
+                    level: "stdout".into(),
+                    message: line.to_string(),
+                });
             }
             return None;
         }
@@ -119,10 +130,14 @@ fn handle_line(s: &Session, line: &str, inflight: &mut VecDeque<String>, re: Opt
                     Some("text") => {
                         let t = b["text"].as_str().unwrap_or_default();
                         if !t.trim().is_empty() {
-                            s.emit(Ev::Text { text: t.to_string() });
+                            s.emit(Ev::Text {
+                                text: t.to_string(),
+                            });
                         }
                     }
-                    Some("tool_use") => s.emit_tool(b["name"].as_str().unwrap_or("tool"), b["input"].clone()),
+                    Some("tool_use") => {
+                        s.emit_tool(b["name"].as_str().unwrap_or("tool"), b["input"].clone())
+                    }
                     _ => {}
                 }
             }
@@ -132,8 +147,12 @@ fn handle_line(s: &Session, line: &str, inflight: &mut VecDeque<String>, re: Opt
             if let Some(id) = inflight.pop_front() {
                 s.emit(Ev::PromptAcked { id });
             }
-            let is_err = v["is_error"].as_bool().unwrap_or(false) || v["subtype"].as_str().is_some_and(|st| st != "success");
-            let text = v["result"].as_str().map(str::to_string).unwrap_or_else(|| v["subtype"].to_string());
+            let is_err = v["is_error"].as_bool().unwrap_or(false)
+                || v["subtype"].as_str().is_some_and(|st| st != "success");
+            let text = v["result"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v["subtype"].to_string());
             if is_err && re.is_some_and(|r| r.is_match(&text)) {
                 return Some(Exit::RateLimited(text));
             }

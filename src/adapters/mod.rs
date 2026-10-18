@@ -80,7 +80,11 @@ impl Spec {
 }
 
 /// Surface stderr as notes and remember the last line that looks like a rate limit.
-pub fn watch_stderr(s: &Arc<Session>, stderr: Option<ChildStderr>, re: Option<regex::Regex>) -> Arc<Mutex<Option<String>>> {
+pub fn watch_stderr(
+    s: &Arc<Session>,
+    stderr: Option<ChildStderr>,
+    re: Option<regex::Regex>,
+) -> Arc<Mutex<Option<String>>> {
     let hit = Arc::new(Mutex::new(None));
     if let Some(err) = stderr {
         let s = s.clone();
@@ -94,7 +98,10 @@ pub fn watch_stderr(s: &Arc<Session>, stderr: Option<ChildStderr>, re: Option<re
                 }
                 n += 1;
                 if n <= 200 && !l.trim().is_empty() {
-                    s.emit(Ev::Note { level: "stderr".into(), message: l });
+                    s.emit(Ev::Note {
+                        level: "stderr".into(),
+                        message: l,
+                    });
                 }
             }
         });
@@ -112,7 +119,11 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-pub async fn run(spec: Spec, s: Arc<Session>, rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>) -> Exit {
+pub async fn run(
+    spec: Spec,
+    s: Arc<Session>,
+    rx: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+) -> Exit {
     use crate::manifest::Protocol::*;
     match spec.manifest.protocol {
         ClaudeStreamJson => claude::run(spec, s, rx).await,
