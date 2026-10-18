@@ -659,11 +659,10 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
                         v["completed"].as_u64().unwrap_or(0),
                         v["total"].as_u64().unwrap_or(0),
                     );
-                    if total > 0 {
+                    if let Some(pct) = (done * 100).checked_div(total) {
                         eprint!(
-                            "\r{name}: {} {:>3}% ({:.0}/{:.0} MB)   ",
+                            "\r{name}: {} {pct:>3}% ({:.0}/{:.0} MB)   ",
                             v["status"].as_str().unwrap_or(""),
-                            done * 100 / total,
                             done as f64 / 1e6,
                             total as f64 / 1e6
                         );
