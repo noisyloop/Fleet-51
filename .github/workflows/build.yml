@@ -1,0 +1,62 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        run: cargo clippy -- -D warnings
+      - name: Unit tests
+        run: cargo test
+      - name: End-to-end demo with mock agents
+        run: scripts/demo.sh
+
+  macos:
+    name: macOS app (.dmg)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add both Mac targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build universal binary (Apple Silicon + Intel)
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/fleet51 \
+            target/aarch64-apple-darwin/release/fleet51 \
+            target/x86_64-apple-darwin/release/fleet51
+          lipo -info dist/fleet51
+      - name: End-to-end demo on macOS
+        run: scripts/demo.sh
+      - name: Package Fleet-51.dmg
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          packaging/macos/build-dmg.sh "$VERSION" dist/fleet51 dist/Fleet-51-macos.dmg
+      - name: Check the packaged app runs
+        run: |
+          hdiutil attach dist/Fleet-51-macos.dmg -mountpoint /tmp/fleet51-dmg -nobrowse
+          /tmp/fleet51-dmg/Fleet-51.app/Contents/Resources/fleet51 --version
+          codesign --verify --deep /tmp/fleet51-dmg/Fleet-51.app
+          hdiutil detach /tmp/fleet51-dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fleet-51-macos
+          path: dist/Fleet-51-macos.dmg
+      - name: Attach to GitHub release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Fleet-51-macos.dmg

@@ -37,7 +37,22 @@ an early, rough demo.
 - **Isolation tiers** (`none`, `docker`, `docker-offline`), **multiple accounts** with
   failover on rate limits, and **no telemetry**.
 
-## Try it (no API keys needed)
+## Install on a Mac (no Rust needed)
+
+Every push builds a universal macOS app (Apple Silicon and Intel) in GitHub Actions:
+
+1. Open the repo's **Actions** tab, pick the latest **Build** run, and download the
+   **Fleet-51-macos** artifact (a zip containing `Fleet-51-macos.dmg`). Tagged versions
+   (`v0.1.0`, …) also attach the `.dmg` to the GitHub release.
+2. Open the `.dmg` and drag **Fleet-51** to Applications.
+3. The app is not signed by Apple yet, so the first launch needs right-click › **Open** › **Open**
+   (or `xattr -dr com.apple.quarantine /Applications/Fleet-51.app`).
+4. Opening Fleet-51 starts the daemon and opens the web UI in your browser. For free local
+   models, install [Ollama](https://ollama.com) and use the **Models** panel.
+
+Windows and Linux packages are planned; on Linux, build from source as below.
+
+## Try it from source (no API keys needed)
 
 ```bash
 cargo build
