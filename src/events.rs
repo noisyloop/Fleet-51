@@ -121,6 +121,7 @@ pub enum Ev {
 pub enum Live {
     State(State),
     Event { session: String, event: Event },
+    Pull(crate::models::Pull),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

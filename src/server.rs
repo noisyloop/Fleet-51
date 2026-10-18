@@ -51,6 +51,8 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/health", get(health))
         .route("/api/agents", get(agents))
         .route("/api/models", get(models))
+        .route("/api/models/pull", post(pull_model))
+        .route("/api/models/delete", post(delete_model))
         .route(
             "/api/workspaces",
             get(list_workspaces).post(create_workspace),
@@ -169,12 +171,43 @@ async fn agents(State(d): D) -> Json<Value> {
     Json(json!(list))
 }
 
-async fn models() -> Json<Value> {
-    match tokio::task::spawn_blocking(crate::agent::ollama_models).await {
-        Ok(Ok(m)) => Json(json!({"ollama": m})),
-        Ok(Err(e)) => Json(json!({"ollama": [], "error": e.to_string()})),
-        Err(e) => Json(json!({"ollama": [], "error": e.to_string()})),
+async fn models(State(d): D) -> Json<Value> {
+    let suggested: Vec<Value> = crate::models::SUGGESTED
+        .iter()
+        .map(|(name, size, tools, note)| json!({"name": name, "size": size, "tools": tools, "note": note}))
+        .collect();
+    let pulls: Vec<_> = d.pulls.lock().unwrap().values().cloned().collect();
+    let (installed, error) = match tokio::task::spawn_blocking(crate::models::installed).await {
+        Ok(Ok(m)) => (m, None),
+        Ok(Err(e)) => (vec![], Some(e.to_string())),
+        Err(e) => (vec![], Some(e.to_string())),
+    };
+    let names: Vec<_> = installed
+        .iter()
+        .filter_map(|m| m["name"].as_str())
+        .collect();
+    Json(
+        json!({"ollama": names, "installed": installed, "suggested": suggested, "pulls": pulls, "error": error}),
+    )
+}
+
+#[derive(Deserialize)]
+struct ModelName {
+    name: String,
+}
+
+async fn pull_model(State(d): D, Json(m): Json<ModelName>) -> R<Value> {
+    d.pull_model(m.name.trim())?;
+    Ok(Json(json!({"pulling": m.name.trim()})))
+}
+
+async fn delete_model(Json(m): Json<ModelName>) -> R<Value> {
+    if !crate::models::valid_name(&m.name) {
+        return Err(anyhow::anyhow!("not a valid model name").into());
     }
+    let name = m.name.clone();
+    tokio::task::spawn_blocking(move || crate::models::delete(&name)).await??;
+    Ok(Json(json!({"deleted": m.name})))
 }
 
 #[derive(Deserialize)]

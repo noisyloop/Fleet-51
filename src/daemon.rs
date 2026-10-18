@@ -42,6 +42,8 @@ pub struct Daemon {
     pub sessions: RwLock<HashMap<String, Arc<Session>>>,
     pub global: broadcast::Sender<Live>,
     pub stop: Notify,
+    /// Model downloads in progress or recently finished, by model name.
+    pub pulls: std::sync::Mutex<HashMap<String, crate::models::Pull>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -276,6 +278,65 @@ impl Daemon {
         Ok(results)
     }
 
+    /// Start downloading a model in the background; progress goes out on the live stream.
+    pub fn pull_model(self: &Arc<Self>, name: &str) -> Result<()> {
+        if !crate::models::valid_name(name) {
+            bail!("not a valid model name: {name}");
+        }
+        {
+            let mut pulls = self.pulls.lock().unwrap();
+            if pulls.get(name).is_some_and(|p| !p.done) {
+                return Ok(());
+            }
+            let p = crate::models::Pull {
+                name: name.into(),
+                status: "starting".into(),
+                completed: 0,
+                total: 0,
+                done: false,
+                error: None,
+            };
+            let _ = self.global.send(Live::Pull(p.clone()));
+            pulls.insert(name.into(), p);
+        }
+        let d = self.clone();
+        let name = name.to_string();
+        tokio::task::spawn_blocking(move || {
+            let mut last_pct = u64::MAX;
+            let mut last_status = String::new();
+            let result = crate::models::pull(&name, |p| {
+                let pct = (p.completed * 100).checked_div(p.total).unwrap_or(0);
+                if pct != last_pct || p.status != last_status {
+                    last_pct = pct;
+                    last_status = p.status.clone();
+                    d.pulls.lock().unwrap().insert(name.clone(), p.clone());
+                    let _ = d.global.send(Live::Pull(p.clone()));
+                }
+            });
+            let mut pulls = d.pulls.lock().unwrap();
+            let p = pulls
+                .entry(name.clone())
+                .or_insert_with(|| crate::models::Pull {
+                    name: name.clone(),
+                    status: String::new(),
+                    completed: 0,
+                    total: 0,
+                    done: false,
+                    error: None,
+                });
+            p.done = true;
+            match result {
+                Ok(()) => p.status = "success".into(),
+                Err(e) => {
+                    p.status = "failed".into();
+                    p.error = Some(e.to_string());
+                }
+            }
+            let _ = d.global.send(Live::Pull(p.clone()));
+        });
+        Ok(())
+    }
+
     pub async fn suspend_all(&self) {
         let running: Vec<_> = self
             .all_sessions()
@@ -358,6 +419,7 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
         sessions: RwLock::new(HashMap::new()),
         global,
         stop: Notify::new(),
+        pulls: std::sync::Mutex::new(HashMap::new()),
     });
 
     // Recover sessions from their logs.

@@ -7,6 +7,7 @@ mod events;
 mod home;
 mod manifest;
 mod mock;
+mod models;
 mod review;
 mod sandbox;
 mod server;
@@ -164,8 +165,11 @@ enum Cmd {
         #[arg(long)]
         name: String,
     },
-    /// List models on the local Ollama server
-    Models,
+    /// Local Ollama models: list, download (`models pull qwen3:1.7b`), delete
+    Models {
+        #[command(subcommand)]
+        cmd: Option<ModelsCmd>,
+    },
     /// Built-in coding agent for Ollama or any OpenAI-compatible server (launched by the daemon)
     #[command(hide = true)]
     Agent {
@@ -217,6 +221,14 @@ enum WsCmd {
     Diff {
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum ModelsCmd {
+    /// Download a model through Ollama, with progress
+    Pull { name: String },
+    /// Delete a local model
+    Rm { name: String },
 }
 
 #[derive(Subcommand)]
@@ -277,12 +289,7 @@ fn real_main() -> Result<()> {
             think,
             tool_mode,
         }),
-        Cmd::Models => {
-            for m in agent::ollama_models()? {
-                println!("{m}");
-            }
-            Ok(())
-        }
+
         Cmd::Up { listen } => up(&home, &listen),
         Cmd::Hook { session, name } => {
             let mut input = String::new();
@@ -596,6 +603,93 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Open { id, at } => open(&c, &id, at.as_deref())?,
+        Cmd::Models { cmd } => match cmd {
+            None => {
+                let m = c.get("/api/models")?;
+                if let Some(e) = m["error"].as_str() {
+                    bail!("{e}");
+                }
+                for x in m["installed"].as_array().into_iter().flatten() {
+                    let tools = match x["tools"].as_bool() {
+                        Some(true) => "tools",
+                        Some(false) => "text-mode tools",
+                        None => "",
+                    };
+                    println!(
+                        "{:<28} {:>8.1} GB  {:<8} {}",
+                        x["name"].as_str().unwrap_or(""),
+                        x["size"].as_f64().unwrap_or(0.0) / 1e9,
+                        x["parameter_size"].as_str().unwrap_or(""),
+                        tools
+                    );
+                }
+                let have: Vec<&str> = m["ollama"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|n| n.as_str())
+                    .collect();
+                let more: Vec<String> = m["suggested"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| s["name"].as_str())
+                    .filter(|n| {
+                        !have
+                            .iter()
+                            .any(|h| h == n || h.split(':').next() == Some(n))
+                    })
+                    .map(|n| n.to_string())
+                    .collect();
+                if !more.is_empty() {
+                    println!(
+                        "\nDownload more with `fleet51 models pull <name>`, e.g. {}",
+                        more.join(", ")
+                    );
+                }
+            }
+            Some(ModelsCmd::Pull { name }) => {
+                c.post("/api/models/pull", json!({"name": name}))?;
+                let mut failed = None;
+                c.stream("/api/stream", |v| {
+                    if v["kind"] != "pull" || v["name"] != name.as_str() {
+                        return true;
+                    }
+                    let (done, total) = (
+                        v["completed"].as_u64().unwrap_or(0),
+                        v["total"].as_u64().unwrap_or(0),
+                    );
+                    if total > 0 {
+                        eprint!(
+                            "\r{name}: {} {:>3}% ({:.0}/{:.0} MB)   ",
+                            v["status"].as_str().unwrap_or(""),
+                            done * 100 / total,
+                            done as f64 / 1e6,
+                            total as f64 / 1e6
+                        );
+                    } else {
+                        eprint!(
+                            "\r{name}: {}                    ",
+                            v["status"].as_str().unwrap_or("")
+                        );
+                    }
+                    if v["done"].as_bool() == Some(true) {
+                        failed = v["error"].as_str().map(str::to_string);
+                        eprintln!();
+                        return false;
+                    }
+                    true
+                })?;
+                match failed {
+                    Some(e) => bail!("download of {name} failed: {e}"),
+                    None => println!("{name} is ready"),
+                }
+            }
+            Some(ModelsCmd::Rm { name }) => {
+                c.post("/api/models/delete", json!({"name": name}))?;
+                println!("deleted {name}");
+            }
+        },
         Cmd::Usage => {
             let u = c.get("/api/usage")?;
             let row = |name: &str, v: &Value| {
@@ -647,8 +741,7 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
         | Cmd::Up { .. }
         | Cmd::Hook { .. }
         | Cmd::MockAgent { .. }
-        | Cmd::Agent { .. }
-        | Cmd::Models => unreachable!(),
+        | Cmd::Agent { .. } => unreachable!(),
     }
     Ok(())
 }
