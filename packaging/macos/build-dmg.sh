@@ -13,7 +13,11 @@ APP="$STAGE/dmg/Fleet-51.app"
 
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/Resources/fleet51"
-cp "$HERE/launcher.sh" "$APP/Contents/MacOS/Fleet-51"
+# The native window (Swift + WebKit), built for Apple Silicon and Intel.
+for arch in arm64 x86_64; do
+  swiftc -O -target "$arch-apple-macos11" "$HERE/app/main.swift" -o "$STAGE/Fleet-51-$arch"
+done
+lipo -create -output "$APP/Contents/MacOS/Fleet-51" "$STAGE/Fleet-51-arm64" "$STAGE/Fleet-51-x86_64"
 chmod +x "$APP/Contents/MacOS/Fleet-51" "$APP/Contents/Resources/fleet51"
 sed "s/VERSION/$VERSION/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
 

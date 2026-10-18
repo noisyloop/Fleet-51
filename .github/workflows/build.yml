@@ -50,7 +50,27 @@ jobs:
           hdiutil attach dist/Fleet-51-macos.dmg -mountpoint /tmp/fleet51-dmg -nobrowse
           /tmp/fleet51-dmg/Fleet-51.app/Contents/Resources/fleet51 --version
           codesign --verify --deep /tmp/fleet51-dmg/Fleet-51.app
+          lipo -info /tmp/fleet51-dmg/Fleet-51.app/Contents/MacOS/Fleet-51
+          cp -R /tmp/fleet51-dmg/Fleet-51.app "$RUNNER_TEMP/"
           hdiutil detach /tmp/fleet51-dmg
+      - name: Launch the app and screenshot its window
+        run: |
+          APP="$RUNNER_TEMP/Fleet-51.app"
+          open "$APP"
+          for i in $(seq 60); do "$APP/Contents/Resources/fleet51" status >/dev/null 2>&1 && break; sleep 1; done
+          "$APP/Contents/Resources/fleet51" status
+          sleep 8
+          pgrep -fl "Fleet-51.app/Contents/MacOS/Fleet-51"
+          mkdir -p dist/screens
+          screencapture -x dist/screens/app-window.png || echo "screenshot not permitted on this runner"
+          "$APP/Contents/Resources/fleet51" down || true
+          pkill -f "Fleet-51.app/Contents/MacOS/Fleet-51" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: app-screenshot
+          path: dist/screens
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: Fleet-51-macos
