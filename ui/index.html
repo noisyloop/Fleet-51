@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Fleet-51</title>
+  <meta name="theme-color" content="#0f1115">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <button class="icon-btn only-mobile" id="toggle-side" aria-label="Sessions">☰</button>
+    <div class="brand"><img src="/icon.svg" alt="" width="22" height="22"> Fleet-51</div>
+    <span class="daemon" id="daemon"></span>
+    <nav class="top-actions">
+      <button id="btn-new" class="primary">New session</button>
+      <button id="btn-fanout">Fan out</button>
+      <button id="btn-usage">Usage</button>
+      <button id="btn-accounts">Accounts</button>
+      <button id="btn-notify" title="Notify me when an agent finishes">🔔</button>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <aside class="side" id="side">
+      <div class="side-head">
+        <input id="filter" type="search" placeholder="Filter sessions">
+      </div>
+      <div id="session-list" class="session-list"></div>
+    </aside>
+    <main id="grid" class="grid">
+      <div class="empty" id="empty">
+        <h1>No session open</h1>
+        <p>Pick sessions on the left to watch them side by side, or start one.</p>
+        <p class="hint">Everything here is also scriptable: <code>fleet51 run mock-claude --repo . -p "hello" --wait</code></p>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="dlg">
+    <form method="dialog" id="dlg-form">
+      <div class="dlg-head"><h2 id="dlg-title"></h2><button value="cancel" class="icon-btn" aria-label="Close">✕</button></div>
+      <div id="dlg-body"></div>
+    </form>
+  </dialog>
+
+  <div id="token-gate" class="token-gate" hidden>
+    <div>
+      <h1>Fleet-51</h1>
+      <p>Paste the daemon token (run <code>fleet51 url</code> to get a ready-made link).</p>
+      <input id="token-input" type="password" autocomplete="off">
+      <button id="token-save" class="primary">Connect</button>
+    </div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

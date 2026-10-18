@@ -1,0 +1,11 @@
+name = "mock-codex"
+display = "Mock (Codex protocol)"
+protocol = "codex-exec-json"
+command = ["{fleet51}", "mock-agent", "--protocol", "codex"]
+prompt_args = ["exec", "--json", "{flags}", "{prompt}"]
+resume_prompt_args = ["exec", "--json", "{flags}", "resume", "{session}", "{prompt}"]
+account_env = "MOCK_ACCOUNT_DIR"
+account_provider = "mock"
+resume_portable = true
+rate_limit_pattern = "(?i)(rate.?limit|usage limit)"
+sandbox_image = "debian:stable-slim"
