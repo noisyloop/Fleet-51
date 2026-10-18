@@ -37,7 +37,22 @@ an early, rough demo.
 - **Isolation tiers** (`none`, `docker`, `docker-offline`), **multiple accounts** with
   failover on rate limits, and **no telemetry**.
 
-## Try it (no API keys needed)
+## Install on a Mac (no Rust needed)
+
+Every push builds a universal macOS app (Apple Silicon and Intel) in GitHub Actions:
+
+1. Open the repo's **Actions** tab, pick the latest **Build** run, and download the
+   **Fleet-51-macos** artifact (a zip containing `Fleet-51-macos.dmg`). Tagged versions
+   (`v0.1.0`, …) also attach the `.dmg` to the GitHub release.
+2. Open the `.dmg` and drag **Fleet-51** to Applications.
+3. The app is not signed by Apple yet, so the first launch needs right-click › **Open** › **Open**
+   (or `xattr -dr com.apple.quarantine /Applications/Fleet-51.app`).
+4. Opening Fleet-51 starts the daemon and opens the web UI in your browser. For free local
+   models, install [Ollama](https://ollama.com) and use the **Models** panel.
+
+Windows and Linux packages are planned; on Linux, build from source as below.
+
+## Try it from source (no API keys needed)
 
 ```bash
 cargo build
@@ -51,10 +66,19 @@ Ollama serves models; it is not a coding agent. Fleet-51 includes a small coding
 (`fleet51 agent`) that uses the model through Ollama's API. It can list, read, search, write and
 edit files and run commands, all confined to the session's workspace.
 
+Download models from the **Models** panel in the web UI. It lists what Ollama has, marks which
+models can call tools, and shows suggested small models with a download button and live progress.
+You can also type any name from [ollama.com/library](https://ollama.com/library). Downloads go
+through Ollama's own pull, which checks every file against its published SHA-256 checksum. The
+same works from the terminal:
+
+![Models panel](docs/screenshots/models.png)
+
 ```bash
-ollama pull qwen3:1.7b && ollama pull qwen3:0.6b
 fleet51 up
-fleet51 models                                   # what Ollama has locally
+fleet51 models pull qwen3:1.7b                   # download with progress (or: tinydolphin, dolphin-phi…)
+fleet51 models                                   # what Ollama has locally, and which can call tools
+fleet51 models rm qwen3:1.7b
 fleet51 run ollama --model qwen3:1.7b --repo . -p "fix the failing test" --wait
 fleet51 fanout --agents ollama --models qwen3:0.6b,qwen3:1.7b -n 2 --repo . -p "add input validation"
 fleet51 compare g-1234abcd                       # which model did best

@@ -216,6 +216,7 @@ function renderEvent(pane, e) {
 
 // ---- dialogs ------------------------------------------------------------
 function dialog(title, body) {
+  if (title !== 'Models') modelsOpen = false;
   $('#dlg-title').textContent = title;
   $('#dlg-body').replaceChildren(body);
   if (!$('#dlg').open) $('#dlg').showModal();
@@ -349,11 +350,69 @@ async function compareDialog(group) {
     el('tbody', {}, rows)));
 }
 
+// ---- models ---------------------------------------------------------------
+const pulls = new Map(); // name -> latest progress from the live stream
+let modelsOpen = false;
+
+function pullRow(name) {
+  const p = pulls.get(name);
+  if (!p) return null;
+  const pct = p.total ? Math.floor((p.completed * 100) / p.total) : 0;
+  const text = p.done ? (p.error ? `Failed: ${p.error}` : 'Downloaded') : `${p.status || 'starting'}${p.total ? ` · ${pct}% of ${(p.total / 1e9).toFixed(2)} GB` : ''}`;
+  return [el('div', { class: 'progress' }, el('div', { style: `width:${p.done && !p.error ? 100 : pct}%` })), el('div', { class: 'sub' + (p.error ? ' error' : ''), text })];
+}
+
+async function modelsDialog() {
+  let m;
+  try { m = await api('/api/models'); } catch (e) { return toast(e.message, 'error'); }
+  for (const p of m.pulls || []) if (!pulls.has(p.name)) pulls.set(p.name, p);
+  const have = new Set(m.ollama || []);
+  const installedNames = [...have];
+  const isInstalled = (n) => have.has(n) || installedNames.some((h) => h.split(':')[0] === n && !n.includes(':'));
+  const download = async (name) => {
+    name = name.trim();
+    if (!name) return;
+    try { await post('/api/models/pull', { name }); pulls.set(name, { name, status: 'starting', completed: 0, total: 0, done: false }); modelsDialog(); } catch (e) { toast(e.message, 'error'); }
+  };
+  const remove = async (name) => {
+    if (!confirm(`Delete ${name} from Ollama?`)) return;
+    try { await post('/api/models/delete', { name }); modelsDialog(); } catch (e) { toast(e.message, 'error'); }
+  };
+  const toolsBadge = (t) => t === true ? el('span', { class: 'badge ok', text: 'tools' }) : t === false ? el('span', { class: 'badge', text: 'text-mode tools' }) : null;
+  const installed = el('div', {}, el('h3', { text: 'On this machine' }),
+    m.error ? el('div', { class: 'msg sys error', text: m.error }) : null,
+    !m.error && !(m.installed || []).length ? el('div', { class: 'muted', text: 'No models yet. Download one on the right.' }) : null,
+    (m.installed || []).map((x) => el('div', { class: 'model-row' },
+      el('span', { class: 'name' }, x.name, toolsBadge(x.tools)),
+      el('button', { type: 'button', class: 'danger', onclick: () => remove(x.name) }, 'Delete'),
+      el('div', { class: 'sub', text: `${(x.size / 1e9).toFixed(2)} GB · ${x.parameter_size || ''} ${x.quantization || ''}` }))));
+  const custom = el('input', { placeholder: 'Any model from ollama.com/library, e.g. tinydolphin or qwen3:4b' });
+  custom.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); download(custom.value); } });
+  const pending = [...pulls.values()].filter((p) => !(m.suggested || []).some((s) => s.name === p.name));
+  const available = el('div', {}, el('h3', { text: 'Download' }),
+    el('div', { style: 'display:flex;gap:6px;margin-bottom:8px' }, custom, el('button', { type: 'button', class: 'primary', onclick: () => download(custom.value) }, 'Download')),
+    pending.map((p) => el('div', { class: 'model-row' }, el('span', { class: 'name', text: p.name }), el('span'), pullRow(p.name))),
+    (m.suggested || []).map((s) => {
+      const p = pulls.get(s.name);
+      const busy = p && !p.done;
+      return el('div', { class: 'model-row' },
+        el('span', { class: 'name' }, s.name, toolsBadge(s.tools)),
+        isInstalled(s.name) ? el('span', { class: 'muted', text: 'installed' }) : el('button', { type: 'button', disabled: busy, onclick: () => download(s.name) }, busy ? 'Downloading…' : `Download ${s.size}`),
+        el('div', { class: 'sub', text: s.note }),
+        pullRow(s.name));
+    }));
+  modelsOpen = true;
+  dialog('Models', el('div', {},
+    el('div', { class: 'models-cols' }, installed, available),
+    el('p', { class: 'muted', text: 'Downloads come from Ollama’s official library, which checks every file against its published SHA-256 checksum. Models marked “text-mode tools” lack native tool calling; the agent falls back to JSON tool calls in text, which is less reliable.' })));
+}
+
 async function usageDialog() {
   const u = await api('/api/usage');
   const table = (title, obj) => el('div', { style: 'margin-bottom:16px' }, el('h3', { text: title, style: 'font-size:13px' }), el('table', {},
     el('thead', {}, el('tr', {}, ['', 'Sessions', 'Turns', 'Input tok', 'Output tok', 'Cost'].map((h, i) => el('th', { class: i ? 'num' : '', text: h })))),
     el('tbody', {}, Object.entries(obj).map(([k, v]) => el('tr', {}, el('td', { text: k }), ...['sessions', 'turns', 'input_tokens', 'output_tokens'].map((f) => el('td', { class: 'num', text: v[f] })), el('td', { class: 'num', text: money(v.cost_usd) }))))));
+  modelsOpen = false;
   dialog('Usage', el('div', {}, table('Total', { all: u.total }), table('By agent', u.by_agent), table('By account', u.by_account),
     el('p', { class: 'muted', text: 'Usage is read from each session’s event log, so plain folders and remote hosts are counted too.' })));
 }
@@ -397,6 +456,13 @@ async function boot() {
   const es = new EventSource(`/api/stream?token=${encodeURIComponent(token)}`);
   es.onmessage = (m) => {
     const msg = JSON.parse(m.data);
+    if (msg.kind === 'pull') {
+      const prev = pulls.get(msg.name);
+      pulls.set(msg.name, msg);
+      if (msg.done && !prev?.done) toast(msg.error ? `${msg.name}: ${msg.error}` : `${msg.name} downloaded`, msg.error ? 'error' : '');
+      if (modelsOpen && $('#dlg').open) modelsDialog();
+      return;
+    }
     if (msg.kind === 'event') {
       const p = panes.get(msg.session);
       if (p) p.loaded ? renderEvent(p, msg.event) : p.buffer.push(msg.event);
@@ -420,9 +486,17 @@ async function boot() {
 
 $('#btn-new').onclick = () => dialog('New session', sessionForm(false));
 $('#btn-fanout').onclick = () => dialog('Fan out one prompt to several agents', sessionForm(true));
+$('#btn-models').onclick = () => modelsDialog();
+$('#dlg').addEventListener('close', () => { modelsOpen = false; });
 $('#btn-usage').onclick = () => usageDialog().catch((e) => toast(e.message, 'error'));
 $('#btn-accounts').onclick = () => accountsDialog().catch((e) => toast(e.message, 'error'));
 $('#btn-notify').onclick = () => { if ('Notification' in window) Notification.requestPermission().then((p) => toast('Notifications ' + p)); };
+$('#btn-more').onclick = () => {
+  const open = $('.top').classList.toggle('more');
+  $('#btn-more').setAttribute('aria-expanded', String(open));
+};
+// Close the phone menu after picking an action from it.
+$('#more-menu').addEventListener('click', () => $('.top').classList.remove('more'));
 $('#toggle-side').onclick = () => $('#side').classList.toggle('show');
 $('#filter').oninput = renderList;
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

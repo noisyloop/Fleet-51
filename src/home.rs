@@ -81,7 +81,7 @@ pub fn short_id(prefix: &str) -> String {
     format!("{prefix}-{}", &u[..8])
 }
 
-/// Linux-only liveness check; elsewhere we assume alive and let the handoff request decide.
+/// Is `pid` a running (not zombie) process?
 pub fn pid_alive(pid: u32) -> bool {
     if cfg!(target_os = "linux") {
         // A zombie still has a /proc entry but is not running.
@@ -93,7 +93,12 @@ pub fn pid_alive(pid: u32) -> bool {
             Err(_) => false,
         }
     } else {
-        true
+        // macOS and other Unixes: signal 0 checks existence without touching the process.
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
     }
 }
 
