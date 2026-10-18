@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Fleet-51</title>
+  <meta name="theme-color" content="#0c0c0d">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/chat.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="side" aria-label="Bots">
+      <div class="side-top">
+        <div class="search-wrap" id="search-wrap" hidden>
+          <input id="search" type="search" placeholder="Search bots" aria-label="Search bots">
+        </div>
+        <span class="spacer"></span>
+        <button class="round" id="btn-search" aria-label="Search bots" title="Search">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="round" id="btn-new" aria-label="New bot" title="New bot">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <nav class="bots" id="bots"></nav>
+      <div class="side-bottom">
+        <button class="pill" id="btn-models">Models</button>
+        <a class="pill ghost" href="/advanced" title="Repos, diffs, fan-out and accounts">Advanced</a>
+      </div>
+    </aside>
+
+    <main class="chat" id="chat">
+      <header class="chat-head">
+        <button class="round only-narrow" id="btn-back" aria-label="Back to bots">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span class="head-avatar" id="head-avatar"></span>
+        <span class="head-name" id="head-name"></span>
+        <label class="model-pick" title="Model this bot uses">
+          <select id="model-select" aria-label="Model"></select>
+        </label>
+        <span class="spacer"></span>
+        <button class="round" id="btn-menu" aria-label="Bot options" aria-haspopup="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>
+        </button>
+        <div class="menu" id="menu" hidden>
+          <button id="menu-folder">Show files</button>
+          <button id="menu-delete" class="danger">Delete bot</button>
+        </div>
+      </header>
+      <div class="msgs" id="msgs" aria-live="polite"></div>
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Message" aria-label="Message"></textarea>
+        <button class="send" id="send" type="submit" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
+      <div class="empty" id="empty" hidden>
+        <p>No bots yet.</p>
+        <button class="pill primary" id="btn-new-empty">Create a bot</button>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="new-bot" aria-labelledby="new-bot-title">
+    <form method="dialog" id="new-bot-form">
+      <div class="dlg-head"><h2 id="new-bot-title">Create New Bot</h2><button class="round" value="cancel" aria-label="Close">✕</button></div>
+      <div class="dlg-body">
+        <div class="big-avatar" id="nb-preview"></div>
+        <input id="nb-name" class="name-input" placeholder="name of bot" maxlength="60" autocomplete="off" aria-label="Bot name">
+        <div class="shapes" id="nb-shapes" role="radiogroup" aria-label="Shape"></div>
+        <div class="colors" id="nb-colors" role="radiogroup" aria-label="Colour"></div>
+      </div>
+      <div class="dlg-foot">
+        <button class="pill" value="cancel">Cancel</button>
+        <button class="pill light" id="nb-create" value="default">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="models-dlg" aria-labelledby="models-title">
+    <form method="dialog">
+      <div class="dlg-head"><h2 id="models-title">Models</h2><button class="round" value="cancel" aria-label="Close">✕</button></div>
+      <div class="dlg-body" id="models-body"></div>
+    </form>
+  </dialog>
+
+  <div class="setup" id="setup" hidden>
+    <div class="setup-card">
+      <div class="big-avatar" id="setup-avatar"></div>
+      <h1>Setting up Fleet-51</h1>
+      <p class="muted">This happens once. Everything runs on this computer.</p>
+      <ol class="steps">
+        <li id="step-engine"><span class="tick"></span><div><b>Model engine (Ollama)</b><div class="sub" id="engine-sub">Checking…</div><div class="bar"><div id="engine-bar"></div></div></div></li>
+        <li id="step-model"><span class="tick"></span><div><b>First model</b><div class="sub" id="model-sub">Waiting…</div><div class="bar"><div id="model-bar"></div></div></div></li>
+      </ol>
+      <button class="pill light" id="setup-retry" hidden>Try again</button>
+    </div>
+  </div>
+
+  <div class="token-gate" id="token-gate" hidden>
+    <div>
+      <h1>Fleet-51</h1>
+      <p class="muted">Paste the daemon token (run <code>fleet51 url</code> for a ready-made link).</p>
+      <input id="token-input" type="password" autocomplete="off" aria-label="Token">
+      <button class="pill light" id="token-save">Connect</button>
+    </div>
+  </div>
+  <script src="/chat.js"></script>
+</body>
+</html>

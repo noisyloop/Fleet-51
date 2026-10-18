@@ -9,6 +9,7 @@ mod manifest;
 mod mock;
 mod models;
 mod review;
+mod runtime;
 mod sandbox;
 mod server;
 mod session;
@@ -193,6 +194,8 @@ enum Cmd {
         think: bool,
         #[arg(long, default_value = "auto")]
         tool_mode: String,
+        #[arg(long, default_value = "coder")]
+        persona: String,
     },
     /// Offline agent that speaks a real protocol (claude | codex | acp | pty)
     #[command(hide = true)]
@@ -277,6 +280,7 @@ fn real_main() -> Result<()> {
             max_steps,
             think,
             tool_mode,
+            persona,
         } => agent::run(agent::Opts {
             provider,
             base_url,
@@ -288,6 +292,7 @@ fn real_main() -> Result<()> {
             max_steps,
             think,
             tool_mode,
+            persona,
         }),
 
         Cmd::Up { listen } => up(&home, &listen),
@@ -379,6 +384,19 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
                 "{} session(s), {live} live",
                 s.as_array().map(|a| a.len()).unwrap_or(0)
             );
+            let rt = &c.get("/api/runtime")?["runtime"];
+            match rt["state"].as_str() {
+                Some("ready") => println!(
+                    "models: ready ({} Ollama at {})",
+                    rt["source"].as_str().unwrap_or(""),
+                    rt["url"].as_str().unwrap_or("")
+                ),
+                Some("failed") => {
+                    println!("models: failed: {}", rt["message"].as_str().unwrap_or(""))
+                }
+                Some(other) => println!("models: {other}"),
+                None => {}
+            }
         }
         Cmd::Url => println!("{}/?token={}", c.base, c.token),
         Cmd::Agents => {

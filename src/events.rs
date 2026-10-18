@@ -112,6 +112,16 @@ pub enum Ev {
         level: String,
         message: String,
     },
+    /// A bot: a named, long-lived chat session with an avatar.
+    Profile {
+        name: String,
+        shape: String,
+        color: String,
+    },
+    ModelChanged {
+        model: String,
+    },
+    Archived,
 }
 
 /// What the daemon-wide stream carries: every session's events and state changes on one
@@ -119,9 +129,10 @@ pub enum Ev {
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Live {
-    State(State),
+    State(Box<State>),
     Event { session: String, event: Event },
     Pull(crate::models::Pull),
+    Runtime(crate::runtime::Runtime),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +175,13 @@ pub struct AnnotationState {
     pub sent: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Profile {
+    pub name: String,
+    pub shape: String,
+    pub color: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     pub id: String,
@@ -192,6 +210,8 @@ pub struct State {
     pub stop_requested: bool,
     pub annotations: Vec<AnnotationState>,
     pub merged: bool,
+    pub profile: Option<Profile>,
+    pub archived: bool,
     pub created: u64,
     pub updated: u64,
     pub last_seq: u64,
@@ -310,6 +330,16 @@ impl State {
                 };
             }
             Ev::Merged { .. } => self.merged = true,
+            Ev::Profile { name, shape, color } => {
+                self.profile = Some(Profile {
+                    name: name.clone(),
+                    shape: shape.clone(),
+                    color: color.clone(),
+                });
+                self.title = name.clone();
+            }
+            Ev::ModelChanged { model } => self.model = Some(model.clone()),
+            Ev::Archived => self.archived = true,
             Ev::Output { .. }
             | Ev::ToolCall { .. }
             | Ev::Permission { .. }
@@ -320,13 +350,39 @@ impl State {
 
     /// Auto-resume only work that was interrupted. A clean exit is never resumed on its own.
     pub fn should_auto_resume(&self) -> bool {
-        matches!(self.status, Status::Suspended | Status::Orphaned)
+        !self.archived && matches!(self.status, Status::Suspended | Status::Orphaned)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bots_keep_profile_model_and_archive_state() {
+        let mut s = State::default();
+        let ev = |seq, ev| Event { seq, ts: seq, ev };
+        s.apply(&ev(
+            1,
+            Ev::Profile {
+                name: "Scout".into(),
+                shape: "star".into(),
+                color: "blue".into(),
+            },
+        ));
+        s.apply(&ev(
+            2,
+            Ev::ModelChanged {
+                model: "qwen3:0.6b".into(),
+            },
+        ));
+        assert_eq!(s.title, "Scout");
+        assert_eq!(s.model.as_deref(), Some("qwen3:0.6b"));
+        s.apply(&ev(3, Ev::Orphaned { generation: 2 }));
+        assert!(s.should_auto_resume());
+        s.apply(&ev(4, Ev::Archived));
+        assert!(!s.should_auto_resume());
+    }
 
     fn ev(seq: u64, ev: Ev) -> Event {
         Event { seq, ts: seq, ev }

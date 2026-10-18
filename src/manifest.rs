@@ -14,6 +14,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("gemini", include_str!("../agents/gemini.toml")),
     ("opencode", include_str!("../agents/opencode.toml")),
     ("ollama", include_str!("../agents/ollama.toml")),
+    ("bot", include_str!("../agents/bot.toml")),
     (
         "openai-compatible",
         include_str!("../agents/openai-compatible.toml"),

@@ -10,6 +10,8 @@ PORT="${PORT:-7471}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/fleet51-demo.XXXXXX")"
 export FLEET51_HOME="$WORK/home"
 export PATH="$ROOT/target/debug:$PATH"
+# The demo uses mock agents only; don't download or start Ollama.
+export FLEET51_NO_RUNTIME=1
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 sid() { fleet51 ls | awk -v t="$1" 'index($0, t) { print $1; exit }'; }
