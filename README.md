@@ -1,6 +1,6 @@
 # Fleet-51
 
-Run a fleet of coding agents (Claude Code, Codex, any ACP agent, or any terminal agent) from
+Run a fleet of coding agents (Claude Code, Codex, Ollama, any ACP agent, or any terminal agent) from
 one small headless daemon. Watch them side by side in a browser or on your phone, review their
 diffs, send line comments back as feedback, and merge the winner.
 
@@ -14,28 +14,6 @@ an early, rough demo.
 |---|---|---|
 | ![Comparing fan-out attempts](docs/screenshots/compare.png) | ![Reviewing a diff with line comments](docs/screenshots/review.png) | ![Phone layout](docs/screenshots/phone.png) |
 
-## Why it is different
-
-- **Talks to agents through their protocols.** It uses Claude stream-json, Codex `exec --json`
-  and ACP rather than typing into a TUI. Each prompt gets an explicit acknowledgement. Terminal-only
-  agents get their prompt only after they show a declared readiness marker, never after a timer.
-- **Never edits your agent config.** Hooks and settings are injected per session (for example
-  `claude --settings <overlay>`). Everything Fleet-51 writes lives in `~/.fleet51`.
-- **Every session is an event log.** Status, resume and replay are derived from it. A cleanly
-  finished session is never resumed by surprise, and an interrupted turn is re-run exactly once.
-- **Headless first.** One binary is the daemon, the CLI and the web UI. Run it on a dev box and
-  open it from a laptop or phone.
-- **Survives upgrades and crashes.** A new daemon generation takes over from the old one and
-  resumes its sessions. After a crash it reaps leftover agent processes.
-- **Workspaces are sets of checkouts.** These can be git worktrees, jj workspaces, plain folders
-  (still diffable), several repos at once, or a monorepo subfolder.
-- **Review instead of re-implementing an IDE.** You get a cross-repo diff, line comments turned
-  into feedback, fan-out comparison, merge, and `fleet51 open` in your own editor.
-- **Agents are data.** Add any agent with a TOML manifest in `~/.fleet51/agents/`.
-- **Free local models.** A built-in coding agent runs on Ollama or any OpenAI-compatible server,
-  so a fleet can be the same task on several local models.
-- **Isolation tiers** (`none`, `docker`, `docker-offline`), **multiple accounts** with
-  failover on rate limits, and **no telemetry**.
 
 ## Install on a Mac (no Rust needed)
 
