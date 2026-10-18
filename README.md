@@ -25,7 +25,8 @@ Every push builds a universal macOS app (Apple Silicon and Intel) in GitHub Acti
 2. Open the `.dmg` and drag **Fleet-51** to Applications.
 3. The app is not signed by Apple yet, so the first launch needs right-click › **Open** › **Open**
    (or `xattr -dr com.apple.quarantine /Applications/Fleet-51.app`).
-4. Opening Fleet-51 starts the daemon and opens the web UI in your browser. For free local
+4. Fleet-51 opens in its own window, and starts the background daemon if it isn't running.
+   Closing the window leaves agents running; **Quit and Stop Agents** (⌥⌘Q) stops everything. For free local
    models, install [Ollama](https://ollama.com) and use the **Models** panel.
 
 Windows and Linux packages are planned; on Linux, build from source as below.
