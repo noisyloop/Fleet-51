@@ -152,6 +152,8 @@ pub struct Prompt {
     pub id: String,
     pub text: String,
     pub delivered: bool,
+    #[serde(default)]
+    pub automation: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -223,10 +225,15 @@ impl State {
                     self.status = Status::Idle;
                 }
             }
-            Ev::PromptQueued { id, text, .. } => self.pending.push(Prompt {
+            Ev::PromptQueued {
+                id,
+                text,
+                automation,
+            } => self.pending.push(Prompt {
                 id: id.clone(),
                 text: text.clone(),
                 delivered: false,
+                automation: automation.clone(),
             }),
             Ev::PromptDelivered { id } => {
                 if let Some(p) = self.pending.iter_mut().find(|p| &p.id == id) {

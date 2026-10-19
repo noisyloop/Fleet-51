@@ -222,14 +222,25 @@ function renderHead() {
   renderModelSelect();
 }
 
+const CLOUD_NOTE = '☁ Cloud model: runs on Ollama\'s servers, so your messages leave this computer and it needs the internet';
+function isCloud(name) { return installed.some((m) => m.name === name && m.cloud); }
+function renderCloud() {
+  const b = bot();
+  const c = $('#cloud-note');
+  c.hidden = !b || !isCloud(b.model);
+  c.title = CLOUD_NOTE;
+}
+
 function renderModelSelect() {
+  renderCloud();
   const b = bot();
   const sel = $('#model-select');
   const names = [...new Set([...(installed.map((m) => m.name)), ...(b && b.model ? [b.model] : [])])];
   sel.replaceChildren(...names.map((n) => {
     const p = pulls.get(n);
     const have = installed.some((m) => m.name === n);
-    const label = have ? n : p && !p.done ? `${n} (downloading ${pct(p)}%)` : `${n} (not downloaded)`;
+    const cloud = installed.some((m) => m.name === n && m.cloud);
+    const label = have ? (cloud ? `${n} ☁ cloud` : n) : p && !p.done ? `${n} (downloading ${pct(p)}%)` : `${n} (not downloaded)`;
     return el('option', { value: n, selected: b && b.model === n }, label);
   }), el('option', { value: '__more' }, 'Get more models…'));
   sel.disabled = !b;
@@ -413,7 +424,7 @@ function renderModelsDialog() {
   $('#models-body').replaceChildren(
     online ? null : el('div', { class: 'offline-note', text: "You're offline. Your downloaded models still work; downloading new ones needs the internet." }),
     el('div', { class: 'model-list' }, el('h3', { text: 'On this computer' }),
-      installed.length ? installed.map((m) => row(m.name, `${(m.size / 1e9).toFixed(1)} GB${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: 'None yet.' })),
+      installed.length ? installed.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: 'None yet.' })),
     el('div', { class: 'model-list' }, el('h3', { text: 'Free models to download' }),
       suggested.filter((s) => !have(s.name)).map((s) => {
         const p = pulls.get(s.name);

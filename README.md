@@ -28,7 +28,8 @@ Create a bot, give it a name and a face, pick a free model, and chat. Run as man
 - **See the thinking:** models that reason show it in a collapsible **Reasoning** section. Turn
   **Think** off for faster replies.
 - **Private:** everything runs on your computer through [Ollama](https://ollama.com). No account, no
-  cloud, no telemetry.
+  cloud, no telemetry. (Ollama also offers "cloud" models, such as the newest DeepSeek, that run on
+  Ollama's servers; Fleet-51 marks them ☁ so you know those chats leave your computer.)
 - **Safe by design:** each bot has its own folder (`~/Fleet-51/<bot name>`, private to you) and can
   only read and write files there.
 - **Runs its own code, only if you allow it:** running code is off for every bot until you switch on

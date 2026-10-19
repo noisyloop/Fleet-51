@@ -22,6 +22,8 @@ pub enum Cmd {
     Prompt {
         id: String,
         text: String,
+        /// Sent by this automation; the bot runs it as a standalone task.
+        automation: Option<String>,
     },
     /// Stop for good (the bot was deleted or the user stopped it).
     Stop,
@@ -146,6 +148,7 @@ impl Session {
             tx.send(Cmd::Prompt {
                 id: id.clone(),
                 text: text.to_string(),
+                automation: automation.map(str::to_string),
             })
             .is_ok()
         });
@@ -158,6 +161,7 @@ impl Session {
             let _ = tx.send(Cmd::Prompt {
                 id: p.id,
                 text: p.text,
+                automation: p.automation,
             });
         }
         *guard = Some(tx);
@@ -301,8 +305,8 @@ async fn run_agent(
                 _ => break,
             },
             cmd = rx.recv(), if open => match cmd {
-                Some(Cmd::Prompt { id, text }) => {
-                    let msg = json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
+                Some(Cmd::Prompt { id, text, automation }) => {
+                    let msg = json!({"type": "user", "automation": automation, "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
                     let ok = match stdin.as_mut() {
                         Some(w) => w.write_all(format!("{msg}\n").as_bytes()).await.is_ok() && w.flush().await.is_ok(),
                         None => false,

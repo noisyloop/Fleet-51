@@ -33,7 +33,10 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/version":
             self.send({"version": "0.0.0-fake"})
         elif self.path == "/api/tags":
-            self.send({"models": [{"name": n, "size": s, "details": {"parameter_size": "1B", "quantization_level": "Q4"}} for n, s in MODELS.items()]})
+            models = [{"name": n, "size": s, "details": {"parameter_size": "1B", "quantization_level": "Q4"}} for n, s in MODELS.items()]
+            # A cloud model as Ollama lists it: tiny on disk, run on a remote host.
+            models.append({"name": "deepseek-v4.1-flash:1017-cloud", "size": 384, "remote_model": "deepseek-v4.1-flash:1017", "remote_host": "https://ollama.com:443", "details": {}})
+            self.send({"models": models})
         else:
             self.send({"error": "not found"}, 404)
 
@@ -53,7 +56,9 @@ class H(BaseHTTPRequestHandler):
                 return self.send({"error": {"message": f"model '{model}' not found"}}, 404)
             last = b["messages"][-1]
             msg = {"role": "assistant", "content": f"Hello from {model}."}
-            if last["role"] == "user" and "save a note" in last["content"]:
+            if last["role"] == "user" and last["content"].startswith("[Automation"):
+                msg = {"role": "assistant", "content": f"Automation ran with {len(b['messages'])} messages."}
+            elif last["role"] == "user" and "save a note" in last["content"]:
                 msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"path": "notes.md", "content": "hi"})}}]}
             elif last["role"] == "user" and "escape" in last["content"]:
                 msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"path": "../escaped.txt", "content": "pwned"})}}]}
