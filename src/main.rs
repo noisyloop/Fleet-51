@@ -1,10 +1,13 @@
 mod agent;
+mod automations;
+mod checkpoints;
 mod client;
 mod daemon;
 mod events;
 mod home;
 mod models;
 mod runtime;
+mod sandbox;
 mod server;
 mod session;
 
@@ -64,6 +67,9 @@ enum Cmd {
         max_steps: usize,
         #[arg(long)]
         think: bool,
+        /// Offer the sandboxed run_command tool
+        #[arg(long)]
+        run_code: bool,
         #[arg(long, default_value = "auto")]
         tool_mode: String,
     },
@@ -99,6 +105,7 @@ fn real_main() -> Result<()> {
             state_dir,
             max_steps,
             think,
+            run_code,
             tool_mode,
         } => agent::run(agent::Opts {
             model,
@@ -106,6 +113,7 @@ fn real_main() -> Result<()> {
             state_dir,
             max_steps,
             think,
+            run_code,
             tool_mode,
         }),
         Cmd::Up { listen } => up(&home, &listen),

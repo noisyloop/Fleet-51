@@ -110,7 +110,9 @@ impl Session {
         self.running.load(Ordering::SeqCst)
     }
 
+    /// Events after `since`, leaving out anything before the chat was last cleared.
     pub fn history(&self, since: u64) -> Vec<Event> {
+        let since = since.max(self.state().cleared_seq);
         let Ok(f) = File::open(self.dir.join("events.jsonl")) else {
             return vec![];
         };
@@ -132,12 +134,13 @@ impl Session {
 
     /// Queue a message. Holding the command lock while appending means a concurrent (re)start
     /// either sees it in `pending` or receives it on the channel, never both.
-    pub fn queue_prompt(&self, text: &str) -> (String, bool) {
+    pub fn queue_prompt(&self, text: &str, automation: Option<&str>) -> (String, bool) {
         let guard = self.cmd.lock().unwrap();
         let id = short_id("p");
         self.emit(Ev::PromptQueued {
             id: id.clone(),
             text: text.to_string(),
+            automation: automation.map(str::to_string),
         });
         let live = guard.as_ref().is_some_and(|tx| {
             tx.send(Cmd::Prompt {
@@ -182,7 +185,7 @@ fn requeue_interrupted(s: &Session) {
             level: "info".into(),
             message: "the last reply was interrupted; asking again".into(),
         });
-        s.queue_prompt(&text);
+        s.queue_prompt(&text, None);
     }
 }
 
@@ -252,6 +255,9 @@ async fn run_agent(
     cmd.arg("agent").arg("--state-dir").arg(&overlay);
     if let Some(m) = &st.model {
         cmd.args(["--model", m]);
+    }
+    if st.run_code {
+        cmd.arg("--run-code");
     }
     if st.think {
         cmd.arg("--think");
@@ -334,6 +340,20 @@ fn handle_line(s: &Session, line: &str, inflight: &mut VecDeque<String>) {
                     s.emit(Ev::ProviderSession { id: id.to_string() });
                 }
             }
+        }
+        Some("system") if v["subtype"] == "checkpoint" => {
+            if let Some(id) = v["id"].as_str() {
+                s.emit(Ev::Checkpoint { id: id.to_string() });
+            }
+        }
+        Some("system") if v["subtype"] == "checkpoint_failed" => {
+            s.emit(Ev::Note {
+                level: "warn".into(),
+                message: v["message"]
+                    .as_str()
+                    .unwrap_or("Undo is not available")
+                    .into(),
+            });
         }
         Some("user") if v["isReplay"] == true => {
             if let Some(id) = inflight.pop_front() {

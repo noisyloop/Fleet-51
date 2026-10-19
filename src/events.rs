@@ -31,6 +31,10 @@ pub enum Ev {
     ThinkChanged {
         think: bool,
     },
+    /// Whether the bot may run code (in the sandbox). Off unless you turn it on.
+    RunCodeChanged {
+        run_code: bool,
+    },
     Spawned {
         pid: Option<u32>,
         generation: u64,
@@ -40,6 +44,9 @@ pub enum Ev {
     PromptQueued {
         id: String,
         text: String,
+        /// The automation that sent this message, if it was not typed by the user.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        automation: Option<String>,
     },
     PromptDelivered {
         id: String,
@@ -78,6 +85,15 @@ pub enum Ev {
         clean: bool,
     },
     Archived,
+    /// The bot copied its folder aside before changing it; Undo restores this copy.
+    Checkpoint {
+        id: String,
+    },
+    Undone {
+        id: String,
+    },
+    /// The chat was cleared: earlier messages are hidden and the bot starts a new conversation.
+    Cleared,
     Note {
         level: String,
         message: String,
@@ -90,9 +106,25 @@ pub enum Ev {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Live {
     State(Box<State>),
-    Event { session: String, event: Event },
+    Event {
+        session: String,
+        event: Event,
+    },
     Pull(crate::models::Pull),
     Runtime(crate::runtime::Runtime),
+    /// The full list, sent whenever an automation is added, changed or runs.
+    Automations {
+        automations: Vec<crate::automations::Automation>,
+    },
+    /// An automation run finished (shown in the app; also sent as a system notification).
+    Notice {
+        bot: String,
+        title: String,
+        body: String,
+    },
+    Network {
+        online: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +168,8 @@ pub struct State {
     pub title: String,
     pub model: Option<String>,
     pub think: bool,
+    #[serde(default)]
+    pub run_code: bool,
     pub profile: Option<Profile>,
     pub status: Status,
     pub provider_session: Option<String>,
@@ -152,6 +186,9 @@ pub struct State {
     pub created: u64,
     pub updated: u64,
     pub last_seq: u64,
+    /// Events up to here were cleared from the chat.
+    #[serde(default)]
+    pub cleared_seq: u64,
 }
 
 impl State {
@@ -176,6 +213,7 @@ impl State {
             }
             Ev::ModelChanged { model } => self.model = Some(model.clone()),
             Ev::ThinkChanged { think } => self.think = *think,
+            Ev::RunCodeChanged { run_code } => self.run_code = *run_code,
             Ev::Spawned { pid, .. } => {
                 self.pid = *pid;
                 self.status = Status::Starting;
@@ -185,7 +223,7 @@ impl State {
                     self.status = Status::Idle;
                 }
             }
-            Ev::PromptQueued { id, text } => self.pending.push(Prompt {
+            Ev::PromptQueued { id, text, .. } => self.pending.push(Prompt {
                 id: id.clone(),
                 text: text.clone(),
                 delivered: false,
@@ -229,7 +267,18 @@ impl State {
                 };
             }
             Ev::Archived => self.archived = true,
-            Ev::Reasoning { .. } | Ev::ToolCall { .. } | Ev::StopRequested | Ev::Note { .. } => {}
+            Ev::Cleared => {
+                self.cleared_seq = e.seq;
+                self.provider_session = None;
+                self.open_turn = None;
+                self.last_text = None;
+            }
+            Ev::Reasoning { .. }
+            | Ev::ToolCall { .. }
+            | Ev::StopRequested
+            | Ev::Note { .. }
+            | Ev::Checkpoint { .. }
+            | Ev::Undone { .. } => {}
         }
     }
 
@@ -255,6 +304,7 @@ mod tests {
             Ev::PromptQueued {
                 id: "a".into(),
                 text: "one".into(),
+                automation: None,
             },
         ));
         s.apply(&ev(
@@ -262,6 +312,7 @@ mod tests {
             Ev::PromptQueued {
                 id: "b".into(),
                 text: "two".into(),
+                automation: None,
             },
         ));
         s.apply(&ev(3, Ev::PromptDelivered { id: "a".into() }));

@@ -6,7 +6,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/fleet51-smoke.XXXXXX")"
-export FLEET51_HOME="$WORK/home" FLEET51_BOTS_DIR="$WORK/bots" OLLAMA_HOST="127.0.0.1:11499"
+export FLEET51_HOME="$WORK/home" FLEET51_BOTS_DIR="$WORK/bots" OLLAMA_HOST="127.0.0.1:11499" FLEET51_ONLINE=1
 PORT=7499
 BIN="$ROOT/target/debug/fleet51"
 FAKE_PID=""
@@ -71,6 +71,55 @@ api "/api/bots/$SCOUT/messages" '{"text":"escape please"}' >/dev/null
 wait_for "$SCOUT" "e['type']=='text' and 'outside your folder' in e['text']"
 [ ! -e "$FLEET51_BOTS_DIR/escaped.txt" ] || fail "bot wrote outside its folder"
 
+step "Undo: a reply that changed files can be undone"
+api "/api/bots/$SCOUT/messages" '{"text":"break it"}' >/dev/null
+wait_for "$SCOUT" "e['type']=='text' and 'wrote notes.md' in e['text'] and e['seq']>$(api "/api/bots/$SCOUT/messages" | json "max(x['seq'] for x in d if x['type']=='checkpoint')")"
+[ "$(cat "$FLEET51_BOTS_DIR/Scout/notes.md")" = "broken" ] || fail "notes.md not overwritten"
+CK=$(api "/api/bots/$SCOUT/messages" | json "[e['id'] for e in d if e['type']=='checkpoint'][-1]")
+api "/api/bots/$SCOUT/undo" "{\"checkpoint\":\"$CK\"}" | grep -q '"ok":true' || fail "undo refused"
+[ "$(cat "$FLEET51_BOTS_DIR/Scout/notes.md")" = "hi" ] || fail "undo did not restore notes.md"
+wait_for "$SCOUT" "e['type']=='undone'"
+
+step "Run code: off unless switched on; then only inside the sandbox"
+api "/api/bots/$FLEET/messages" '{"text":"run code"}' >/dev/null
+wait_for "$FLEET" "e['type']=='text' and 'switched off' in e['text']"
+[ ! -e "$FLEET51_BOTS_DIR/Fleet/out.txt" ] || fail "a bot ran code with running code off"
+if api "/api/bots/$SCOUT/run-code" '{"run_code":true}' | grep -q '"run_code":true'; then
+api "/api/bots/$SCOUT/messages" '{"text":"run code"}' >/dev/null
+wait_for "$SCOUT" "e['type']=='text' and e['text'].startswith('Tool said') and e['seq']>$(api "/api/bots/$SCOUT/messages" | json "d[-1]['seq']")"
+RAN=$(api "/api/bots/$SCOUT/messages" | json "[e['text'] for e in d if e['type']=='text'][-1]")
+echo "$RAN"
+[ ! -e "$FLEET51_BOTS_DIR/sandbox-escape.txt" ] || fail "code wrote outside the bot folder"
+if echo "$RAN" | grep -q "ran-in-sandbox"; then
+  [ -f "$FLEET51_BOTS_DIR/Scout/out.txt" ] || fail "sandboxed code could not write in its folder"
+else
+  fail "the sandbox did not run the code"
+fi
+elif [ "$(uname)" = Darwin ]; then
+  fail "no sandbox found on macOS"
+else
+  echo "(no sandbox on this machine: running code cannot be switched on)"
+fi
+
+step "Clear chat: messages go, the bot starts fresh"
+api "/api/bots/$FLEET/clear" '{}' >/dev/null
+[ "$(api "/api/bots/$FLEET/messages" | json 'len(d)')" -le 2 ] || fail "chat not cleared"
+api "/api/bots/$FLEET/messages" '{"text":"fresh start"}' >/dev/null
+wait_for "$FLEET" "e['type']=='text'"
+
+step "Automations: a bot runs saved instructions on a schedule, and on demand"
+AUTO=$(api /api/automations "{\"bot\":\"$SCOUT\",\"name\":\"Morning report\",\"instructions\":\"daily summary please\",\"schedule\":{\"repeat\":\"daily\",\"times\":[\"07:30\"]}}" | json 'd["id"]')
+[ "$(api /api/automations | json 'd[0]["next_run"] is not None')" = "True" ] || fail "no next run"
+api /api/automations "{\"bot\":\"$SCOUT\",\"name\":\"Past\",\"instructions\":\"x\",\"schedule\":{\"repeat\":\"once\",\"times\":[\"09:00\"],\"date\":\"2020-01-01\"}}" | grep -q "already passed" || fail "a time in the past was accepted"
+api "/api/automations/$AUTO/run" '{}' >/dev/null
+wait_for "$SCOUT" "e['type']=='prompt_queued' and e.get('automation')=='Morning report'"
+for _ in $(seq 100); do [ "$(api /api/automations | json 'd[0]["last_status"]')" = "done" ] && break; sleep 0.2; done
+[ "$(api /api/automations | json 'd[0]["last_status"]')" = "done" ] || { api /api/automations; fail "automation run did not finish"; }
+[ "$(api /api/automations | json 'len(d[0]["history"])')" = "1" ] || fail "run not in history"
+RUN=$(api /api/automations | json 'd[0]["history"][0]["id"]')
+api "/api/automations/$AUTO/history/delete" "{\"run\":\"$RUN\"}" >/dev/null
+[ "$(api /api/automations | json 'len(d[0]["history"])')" = "0" ] || fail "run not deleted from history"
+
 step "Update handoff: a newer service takes over and keeps the bots"
 OLD=$(python3 -c "import json; print(json.load(open('$FLEET51_HOME/daemon.json'))['pid'])")
 "$BIN" daemon --listen "127.0.0.1:$PORT" > "$WORK/daemon2.log" 2>&1 &
@@ -78,12 +127,16 @@ for _ in $(seq 50); do kill -0 "$OLD" 2>/dev/null || break; sleep 0.2; done
 kill -0 "$OLD" 2>/dev/null && fail "old service still running"
 for _ in $(seq 50); do api /api/health >/dev/null 2>&1 && break; sleep 0.2; done
 [ "$(api /api/bots | json 'len(d)')" = "2" ] || fail "bots lost in handoff"
+[ "$(api /api/automations | json 'len(d)')" = "1" ] || fail "automations lost in handoff"
+LAST=$(api "/api/bots/$SCOUT/messages" | json "d[-1]['seq']")
 api "/api/bots/$SCOUT/messages" '{"text":"still there?"}' >/dev/null
-wait_for "$SCOUT" "e['type']=='text' and e['text'].startswith('Hello') and e['seq']>30"
+wait_for "$SCOUT" "e['type']=='text' and e['text'].startswith('Hello') and e['seq']>$LAST"
 
 step "Delete a bot"
 api "/api/bots/$FLEET/delete" '{}' >/dev/null
 [ "$(api /api/bots | json 'len(d)')" = "1" ] || fail "bot not deleted"
+api "/api/bots/$SCOUT/delete" '{}' >/dev/null
+[ "$(api /api/automations | json 'len(d)')" = "0" ] || fail "a deleted bot's automations remain"
 
 echo
 echo "smoke test passed"

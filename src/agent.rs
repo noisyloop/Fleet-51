@@ -2,8 +2,9 @@
 //! JSON-lines protocol on stdio (Claude Code's stream-json shape), so the daemon gets explicit
 //! prompt acknowledgements, resumable sessions, reasoning, tool events and token usage.
 //!
-//! A bot can only touch files inside its own folder: there is no shell tool, and every path is
-//! resolved (following symlinks) and checked against the folder before use.
+//! A bot can only touch files inside its own folder: every path is resolved (following symlinks)
+//! and checked against the folder before use, and code runs only inside the sandbox (see
+//! sandbox.rs). Before a bot's first change in a reply its folder is copied aside for Undo.
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -21,6 +22,8 @@ pub struct Opts {
     pub max_steps: usize,
     /// Let reasoning models think before answering; the reasoning is shown in the chat.
     pub think: bool,
+    /// Offer run_command (only if a sandbox works on this computer).
+    pub run_code: bool,
     /// native | text | auto (native, falling back to text for models without tool calling)
     pub tool_mode: String,
 }
@@ -58,12 +61,12 @@ pub fn ollama_models() -> Result<Vec<String>> {
         .collect())
 }
 
-fn tools() -> Value {
+fn tools(can_run: bool) -> Value {
     let f = |name: &str, desc: &str, props: Value, req: &[&str]| {
         json!({"type": "function", "function": {"name": name, "description": desc,
             "parameters": {"type": "object", "properties": props, "required": req}}})
     };
-    json!([
+    let mut t = json!([
         f(
             "list_files",
             "List files in your folder (or a subfolder).",
@@ -94,14 +97,31 @@ fn tools() -> Value {
             json!({"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}),
             &["path", "old_text", "new_text"]
         ),
-    ])
+    ]);
+    if can_run {
+        t.as_array_mut().expect("array").push(f(
+            "run_command",
+            "Run a shell command in your folder, for example to test code you wrote (python3 app.py). \
+             It has no internet access, can only change files in your folder and stops after 60 seconds.",
+            json!({"command": {"type": "string"}}),
+            &["command"],
+        ));
+    }
+    t
 }
 
 const SYSTEM_PROMPT: &str =
     "You are a helpful assistant running privately on the user's own computer. \
 You have a folder of your own and tools to list, read, search, create and edit files in it; you \
-cannot touch anything outside it or run programs. Use the tools only when a request needs them; \
+cannot touch anything outside it. Use the tools only when a request needs them; \
 for ordinary questions and conversation, just answer. Be clear and concise.";
+
+const RUN_PROMPT: &str =
+    " You can also run commands in your folder with run_command (no internet, \
+60-second limit). When you write code, run it to check it works before saying it is done.";
+
+/// Tools that change the folder; the first one in a reply takes an undo checkpoint.
+const CHANGES_FILES: &[&str] = &["write_file", "edit_file", "run_command"];
 
 /// Resolve a model-supplied path inside `root`, following symlinks, and refuse anything outside.
 fn safe_path(root: &Path, p: &str) -> Result<PathBuf> {
@@ -173,7 +193,12 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
     }
 }
 
-fn run_tool(root: &Path, name: &str, a: &Value) -> Result<String> {
+fn run_tool(
+    root: &Path,
+    sandbox: Option<crate::sandbox::Kind>,
+    name: &str,
+    a: &Value,
+) -> Result<String> {
     let s = |k: &str| {
         a[k].as_str()
             .map(str::to_string)
@@ -240,6 +265,22 @@ fn run_tool(root: &Path, name: &str, a: &Value) -> Result<String> {
                 }
                 n => bail!("old_text occurs {n} times; include more context"),
             }
+        }
+        "run_command" => {
+            let kind = sandbox.ok_or_else(|| {
+                anyhow!("running programs is switched off for you; the user can turn it on")
+            })?;
+            let (code, output) = crate::sandbox::run(kind, root, &s("command")?)?;
+            let output = if output.trim().is_empty() {
+                "(no output)".to_string()
+            } else {
+                output
+            };
+            Ok(clip(match code {
+                Some(0) => output,
+                Some(c) => format!("exit code {c}\n{output}"),
+                None => format!("stopped by a signal\n{output}"),
+            }))
         }
         other => bail!("unknown tool {other}"),
     }
@@ -346,6 +387,28 @@ fn say(session: &str, block: Value) {
     );
 }
 
+/// Copy the folder aside before the bot changes it, and tell the daemon so the chat offers Undo.
+fn checkpoint(root: &Path, state_dir: Option<&Path>, session: &str) {
+    let Some(dir) = state_dir.map(|d| d.join("checkpoints")) else {
+        return;
+    };
+    let id = format!("{}", crate::home::now_ms());
+    match crate::checkpoints::snapshot(root, &dir.join(&id)) {
+        Ok(()) => {
+            crate::checkpoints::prune(&dir);
+            out(
+                json!({"type": "system", "subtype": "checkpoint", "session_id": session, "id": id}),
+            );
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(dir.join(&id));
+            out(
+                json!({"type": "system", "subtype": "checkpoint_failed", "session_id": session, "message": format!("Undo is not available for this reply: {e}")}),
+            );
+        }
+    }
+}
+
 pub fn run(o: Opts) -> Result<()> {
     let root = std::env::current_dir()?.canonicalize()?;
     let session = o
@@ -361,7 +424,24 @@ pub fn run(o: Opts) -> Result<()> {
         .and_then(|f| std::fs::read_to_string(f).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| vec![json!({"role": "system", "content": SYSTEM_PROMPT})]);
-    let tools = tools();
+    let sandbox = if o.run_code {
+        crate::sandbox::available()
+    } else {
+        None
+    };
+    // Running code can be switched on and off mid-conversation; keep the instructions in step.
+    if let Some(sys) = messages.first_mut() {
+        let text = sys["content"]
+            .as_str()
+            .unwrap_or_default()
+            .replace(RUN_PROMPT, "");
+        sys["content"] = json!(if sandbox.is_some() {
+            text + RUN_PROMPT
+        } else {
+            text
+        });
+    }
+    let tools = tools(sandbox.is_some());
     let mut text_mode = o.tool_mode == "text";
     if text_mode {
         enter_text_mode(&mut messages, &tools);
@@ -416,6 +496,7 @@ pub fn run(o: Opts) -> Result<()> {
         let (mut tin, mut tout) = (0u64, 0u64);
         let mut last = String::new();
         let mut error: Option<String> = None;
+        let mut checkpointed = false;
         for step in 0..o.max_steps {
             let mut reply = chat(&model, o.think, &messages, (!text_mode).then_some(&tools));
             if let Err(e) = &reply {
@@ -496,7 +577,12 @@ pub fn run(o: Opts) -> Result<()> {
                     &session,
                     json!({"type": "tool_use", "id": id, "name": name, "input": args}),
                 );
-                let result = run_tool(&root, name, &args).unwrap_or_else(|e| format!("error: {e}"));
+                if CHANGES_FILES.contains(&name) && !checkpointed {
+                    checkpointed = true;
+                    checkpoint(&root, o.state_dir.as_deref(), &session);
+                }
+                let result =
+                    run_tool(&root, sandbox, name, &args).unwrap_or_else(|e| format!("error: {e}"));
                 if text_mode {
                     messages.push(
                         json!({"role": "user", "content": format!("Result of {name}:\n{result}")}),

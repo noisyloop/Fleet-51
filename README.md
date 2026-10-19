@@ -20,12 +20,26 @@ Create a bot, give it a name and a face, pick a free model, and chat. Run as man
   window (⋯ › Open in new window) to have several conversations side by side.
 - **Pick a model per bot:** choose from the menu at the top of the chat, and download more free models
   from **Models**. Bots on different models run at the same time.
+- **Automations:** give a bot a job on a schedule: once, hourly, daily, weekdays, weekly, monthly,
+  annually, or your own days and times. Name it, write the instructions, and get a notification when
+  it's done. The run and its reply land in the bot's chat.
+- **Works offline:** after the first setup, bots and automations run with no internet at all. An
+  **Offline** badge shows when you're disconnected; only downloading new models needs a connection.
 - **See the thinking:** models that reason show it in a collapsible **Reasoning** section. Turn
   **Think** off for faster replies.
 - **Private:** everything runs on your computer through [Ollama](https://ollama.com). No account, no
   cloud, no telemetry.
-- **Safe by design:** each bot has its own folder (`~/Fleet-51/<bot name>`) and can only read and write
-  files there. Bots cannot run programs or reach anything else on your computer.
+- **Safe by design:** each bot has its own folder (`~/Fleet-51/<bot name>`, private to you) and can
+  only read and write files there.
+- **Runs its own code, only if you allow it:** running code is off for every bot until you switch on
+  **Run code** in its chat. Then it can run what it writes to check it works. The code runs
+  in the operating system's sandbox (built into macOS; bubblewrap on Linux) with no internet, the
+  rest of your home folder hidden, only its own folder writable, and a 60-second limit. Where no
+  sandbox is available, bots simply can't run code.
+- **Undo:** before a bot changes its files in a reply, Fleet-51 keeps a copy outside the bot's reach.
+  **Undo** under that reply puts the folder back exactly as it was.
+- **Tidy up:** right-click a bot to clear its chat or delete it. Automation history can be deleted run
+  by run or all at once.
 
 ## Install on a Mac
 
@@ -66,6 +80,8 @@ scripts/smoke.sh                # end-to-end test against a stand-in Ollama
 | `src/daemon.rs` | Background service: owns the bots, model downloads and the model engine; a newer build takes over from an older one |
 | `src/session.rs`, `src/events.rs` | Each bot is an append-only event log plus a supervisor that runs its agent; replies, reasoning and status are read from the log |
 | `src/agent.rs` | The bot itself: talks to the Ollama model, with file tools confined to the bot's folder |
+| `src/sandbox.rs`, `src/checkpoints.rs` | Running bot code in the OS sandbox; undo copies of bot folders |
+| `src/automations.rs` | Schedules, runs and notifications for automations (`~/.fleet51/automations.json`) |
 | `src/runtime.rs`, `src/models.rs` | Finds, downloads (checksum-verified) and starts Ollama; lists and downloads models |
 | `ui/` | The chat app (no build step), shown in the Mac app's window or any browser |
 | `packaging/macos/` | The native Mac app and `.dmg` packaging, built by GitHub Actions |
@@ -73,7 +89,14 @@ scripts/smoke.sh                # end-to-end test against a stand-in Ollama
 Fleet-51 began as a teardown of [Orca](https://github.com/stablyai/orca); the analysis is in
 [`docs/orca-teardown.md`](docs/orca-teardown.md).
 
+## Automations
+
+**Automations › New** (or a bot's **⋯ › New automation…**) opens the editor: a name, the bot that does
+it, a trigger, the instructions, and whether to notify you when it's done. Times are your computer's
+local time. Fleet-51 has to be running for an automation to run (closing the window is fine); a run
+missed while the computer was asleep or off happens when Fleet-51 is next running, if that's within
+12 hours.
+
 ## Coming later
 
-Scheduled jobs (a bot that runs a task every morning, such as a daily summary or code check),
-Windows and Linux packages, and signed builds.
+Email notifications, Windows and Linux packages, and signed builds.

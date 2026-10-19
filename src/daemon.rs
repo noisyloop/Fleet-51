@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -72,6 +73,9 @@ pub struct Daemon {
     pub pulls: Mutex<HashMap<String, Pull>>,
     pub runtime: Mutex<Runtime>,
     pub ollama: Mutex<Option<std::process::Child>>,
+    pub automations: crate::automations::Automations,
+    /// Whether the internet is reachable. Bots work either way; only downloads need it.
+    pub online: AtomicBool,
 }
 
 impl Daemon {
@@ -154,6 +158,9 @@ impl Daemon {
             n += 1;
         }
         std::fs::create_dir_all(&folder)?;
+        // Only you (and the bot, inside it) can read a bot's files.
+        crate::home::private_dir(&base);
+        crate::home::private_dir(&folder);
         let id = short_id("s");
         let s = Session::open(self.home.sessions().join(&id), &id, self.global.clone())?;
         s.emit(Ev::Created {
@@ -172,8 +179,13 @@ impl Daemon {
     }
 
     /// Send a message; a bot that is not running is started again to answer it.
-    pub fn prompt(self: &Arc<Self>, s: &Arc<Session>, text: &str) -> String {
-        let (id, live) = s.queue_prompt(text);
+    pub fn prompt(
+        self: &Arc<Self>,
+        s: &Arc<Session>,
+        text: &str,
+        automation: Option<&str>,
+    ) -> String {
+        let (id, live) = s.queue_prompt(text, automation);
         if !live && !s.is_running() {
             session::start(self.clone(), s.clone(), s.state().provider_session);
         }
@@ -191,12 +203,48 @@ impl Daemon {
         Ok(())
     }
 
+    pub fn set_run_code(&self, s: &Arc<Session>, run_code: bool) -> Result<()> {
+        if run_code && crate::sandbox::available().is_none() {
+            bail!("this computer has no sandbox for running code, so bots can't run code here");
+        }
+        s.emit(Ev::RunCodeChanged { run_code });
+        s.send(Cmd::Restart);
+        Ok(())
+    }
+
     pub fn set_think(&self, s: &Arc<Session>, think: bool) {
         s.emit(Ev::ThinkChanged { think });
         s.send(Cmd::Restart);
     }
 
+    /// Put the bot's folder back as it was at a checkpoint (before one of its replies).
+    pub fn undo(&self, s: &Arc<Session>, id: &str) -> Result<()> {
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+            bail!("not an undo point: {id}");
+        }
+        let st = s.state();
+        if st.status == crate::events::Status::Working || !st.pending.is_empty() {
+            bail!("wait for {} to finish replying, then undo", st.title);
+        }
+        let folder = PathBuf::from(&st.cwd).canonicalize()?;
+        let root = bots_root().canonicalize()?;
+        // Restoring empties the folder first, so be certain it is a bot's own folder.
+        if !folder.starts_with(&root) || folder == root {
+            bail!("{} is not a bot folder", folder.display());
+        }
+        crate::checkpoints::restore(&folder, &s.dir.join("agent").join("checkpoints").join(id))?;
+        s.emit(Ev::Undone { id: id.into() });
+        Ok(())
+    }
+
+    /// Start the conversation over; files stay as they are.
+    pub fn clear_chat(&self, s: &Arc<Session>) {
+        s.emit(Ev::Cleared);
+        s.send(Cmd::Restart);
+    }
+
     pub fn delete_bot(&self, s: &Arc<Session>) {
+        crate::automations::delete_for_bot(self, &s.id);
         s.emit(Ev::Archived);
         s.emit(Ev::StopRequested);
         s.send(Cmd::Stop);
@@ -312,6 +360,38 @@ impl Daemon {
     }
 }
 
+/// Check now and then whether the internet is reachable, for the app's Offline badge.
+fn watch_network(d: Arc<Daemon>) {
+    tokio::spawn(async move {
+        loop {
+            let online = tokio::task::spawn_blocking(internet_reachable)
+                .await
+                .unwrap_or(false);
+            if d.online.swap(online, Ordering::SeqCst) != online {
+                let _ = d.global.send(Live::Network { online });
+            }
+            tokio::time::sleep(Duration::from_secs(if online { 60 } else { 15 })).await;
+        }
+    });
+}
+
+fn internet_reachable() -> bool {
+    if let Ok(v) = std::env::var("FLEET51_ONLINE") {
+        return v != "0";
+    }
+    use std::net::{TcpStream, ToSocketAddrs};
+    ["registry.ollama.ai:443", "github.com:443"]
+        .iter()
+        .any(|host| {
+            host.to_socket_addrs()
+                .ok()
+                .and_then(|mut a| a.next())
+                .is_some_and(|addr| {
+                    TcpStream::connect_timeout(&addr, Duration::from_secs(4)).is_ok()
+                })
+        })
+}
+
 async fn hand_off(home: &Home, token: &str) -> u64 {
     let Some(prev) = read_info(home) else {
         return 1;
@@ -379,6 +459,8 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
         pulls: Mutex::new(HashMap::new()),
         runtime: Mutex::new(Runtime::Checking),
         ollama: Mutex::new(None),
+        automations: crate::automations::Automations::load(&home),
+        online: AtomicBool::new(true),
     });
 
     // Recover bots from their logs; anything that is not a bot (older developer sessions) is ignored.
@@ -425,6 +507,8 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
     println!("Fleet-51 daemon generation {generation} listening on {url}");
     println!("Open: {url}/?token={token}");
     d.clone().start_runtime();
+    crate::automations::start(d.clone());
+    watch_network(d.clone());
     let app = crate::server::router(d.clone());
     let d2 = d.clone();
     axum::serve(listener, app)

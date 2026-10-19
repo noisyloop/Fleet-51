@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
+use crate::automations::Draft;
 use crate::daemon::{Daemon, BOT_COLORS, BOT_SHAPES};
 use crate::session::Session;
 
@@ -68,8 +69,16 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/bots/{id}/messages", get(history).post(send))
         .route("/api/bots/{id}/model", post(bot_model))
         .route("/api/bots/{id}/think", post(bot_think))
+        .route("/api/bots/{id}/run-code", post(bot_run_code))
         .route("/api/bots/{id}/delete", post(bot_delete))
+        .route("/api/bots/{id}/undo", post(bot_undo))
+        .route("/api/bots/{id}/clear", post(bot_clear))
+        .route("/api/automations/{id}/history/delete", post(delete_runs))
         .route("/api/bots/{id}/reveal", post(bot_reveal))
+        .route("/api/automations", get(automations).post(create_automation))
+        .route("/api/automations/{id}", post(edit_automation))
+        .route("/api/automations/{id}/run", post(run_automation))
+        .route("/api/automations/{id}/delete", post(delete_automation))
         .route("/api/stream", get(stream))
         .route("/api/shutdown", post(shutdown))
         .layer(middleware::from_fn_with_state(d.clone(), auth));
@@ -121,7 +130,7 @@ async fn health(State(d): D) -> Json<Value> {
 async fn runtime(State(d): D) -> Json<Value> {
     let r = d.runtime.lock().unwrap().clone();
     Json(
-        json!({"runtime": r, "default_model": crate::runtime::DEFAULT_MODEL, "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
+        json!({"runtime": r, "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "sandbox": crate::sandbox::available().is_some(), "default_model": crate::runtime::DEFAULT_MODEL, "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
     )
 }
 
@@ -136,7 +145,7 @@ fn bot_json(s: &Session) -> Value {
     json!({
         "id": st.id, "name": p.as_ref().map(|p| p.name.clone()).unwrap_or(st.title.clone()),
         "shape": p.as_ref().map(|p| p.shape.clone()), "color": p.as_ref().map(|p| p.color.clone()),
-        "model": st.model, "think": st.think, "folder": st.cwd, "status": st.status, "preview": st.last_text,
+        "model": st.model, "think": st.think, "run_code": st.run_code, "folder": st.cwd, "status": st.status, "preview": st.last_text,
         "pending": st.pending.len(), "updated": st.updated, "created": st.created,
     })
 }
@@ -184,7 +193,7 @@ async fn send(State(d): D, Path(id): Path<String>, Json(t): Json<Text>) -> R<Val
     if t.text.trim().is_empty() {
         return Err(anyhow::anyhow!("empty message").into());
     }
-    Ok(Json(json!({"id": d.prompt(&s, &t.text)})))
+    Ok(Json(json!({"id": d.prompt(&s, &t.text, None)})))
 }
 
 #[derive(Deserialize)]
@@ -206,6 +215,38 @@ struct Think {
 async fn bot_think(State(d): D, Path(id): Path<String>, Json(t): Json<Think>) -> R<Value> {
     let s = d.bot(&id)?;
     d.set_think(&s, t.think);
+    Ok(Json(bot_json(&s)))
+}
+
+#[derive(Deserialize)]
+struct Undo {
+    checkpoint: String,
+}
+
+async fn bot_undo(State(d): D, Path(id): Path<String>, Json(u): Json<Undo>) -> R<Value> {
+    let s = d.bot(&id)?;
+    let d2 = d.clone();
+    tokio::task::spawn_blocking(move || d2.undo(&s, &u.checkpoint)).await??;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn bot_clear(State(d): D, Path(id): Path<String>) -> R<Value> {
+    let s = d.bot(&id)?;
+    d.clear_chat(&s);
+    Ok(Json(bot_json(&s)))
+}
+
+#[derive(Deserialize)]
+struct RunCode {
+    run_code: bool,
+}
+
+async fn bot_run_code(State(d): D, Path(id): Path<String>, Json(r): Json<RunCode>) -> R<Value> {
+    let s = d.bot(&id)?;
+    let d2 = d.clone();
+    let on = r.run_code;
+    let s2 = s.clone();
+    tokio::task::spawn_blocking(move || d2.set_run_code(&s2, on)).await??;
     Ok(Json(bot_json(&s)))
 }
 
@@ -260,6 +301,44 @@ async fn delete_model(Json(m): Json<ModelName>) -> R<Value> {
     let name = m.name.clone();
     tokio::task::spawn_blocking(move || crate::models::delete(&name)).await??;
     Ok(Json(json!({"deleted": m.name})))
+}
+
+async fn automations(State(d): D) -> Json<Value> {
+    Json(json!(d.automations.list()))
+}
+
+async fn create_automation(State(d): D, Json(a): Json<Draft>) -> R<Value> {
+    let d2 = d.clone();
+    let a = tokio::task::spawn_blocking(move || crate::automations::create(&d2, a)).await??;
+    Ok(Json(json!(a)))
+}
+
+async fn edit_automation(State(d): D, Path(id): Path<String>, Json(a): Json<Draft>) -> R<Value> {
+    let d2 = d.clone();
+    let a = tokio::task::spawn_blocking(move || crate::automations::edit(&d2, &id, a)).await??;
+    Ok(Json(json!(a)))
+}
+
+async fn run_automation(State(d): D, Path(id): Path<String>) -> R<Value> {
+    let d2 = d.clone();
+    tokio::task::spawn_blocking(move || crate::automations::run(&d2, &id)).await??;
+    Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize)]
+struct DeleteRuns {
+    /// One run's id; leave out to clear the whole history.
+    run: Option<String>,
+}
+
+async fn delete_runs(State(d): D, Path(id): Path<String>, Json(r): Json<DeleteRuns>) -> R<Value> {
+    crate::automations::delete_runs(&d, &id, r.run.as_deref())?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn delete_automation(State(d): D, Path(id): Path<String>) -> R<Value> {
+    crate::automations::delete(&d, &id)?;
+    Ok(Json(json!({"ok": true})))
 }
 
 async fn stream(State(d): D) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
