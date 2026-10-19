@@ -407,7 +407,7 @@ pub fn run(d: &Arc<Daemon>, id: &str) -> Result<()> {
         .find(|a| a.id == id)
         .with_context(|| format!("no automation {id}"))?;
     let s = d.bot(&a.bot)?;
-    let prompt = d.prompt(&s, &a.instructions, Some(&a.name));
+    let prompt = d.prompt(&s, &a.instructions, Some(&a.name), &[]);
     d.automations.runs.lock().unwrap().insert(
         prompt,
         Run {

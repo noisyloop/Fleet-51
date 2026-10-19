@@ -77,8 +77,11 @@ fn sb_str(p: &Path) -> String {
     )
 }
 
-fn macos_profile(folder: &Path) -> String {
+fn macos_profile(folder: &Path, extra_read: Option<&Path>) -> String {
     let (f, h) = (sb_str(folder), sb_str(&home()));
+    let extra = extra_read
+        .map(|p| format!("(allow file-read-data (literal {}))\n", sb_str(p)))
+        .unwrap_or_default();
     // Later rules win: deny broadly, then allow the bot's folder back.
     format!(
         "(version 1)
@@ -88,23 +91,46 @@ fn macos_profile(folder: &Path) -> String {
 (allow file-write* (subpath {f}) (literal \"/dev/null\") (literal \"/dev/zero\") (regex #\"^/dev/fd/\") (regex #\"^/dev/tty\"))
 (deny file-read-data (subpath {h}))
 (allow file-read-data (subpath {f}))
-"
+{extra}"
     )
 }
 
 /// Run `command` with `sh -c` inside the sandbox, in `folder`. Returns the exit code and output.
 pub fn run(kind: Kind, folder: &Path, command: &str) -> Result<(Option<i32>, String)> {
+    run_program(
+        Some(kind),
+        folder,
+        Path::new("/bin/sh"),
+        &["-c", command],
+        None,
+    )
+}
+
+/// Run a program inside the sandbox (or, with no sandbox, as a plain child process with the same
+/// clean environment and time limit). `extra_read` is one more file it may read, such as itself.
+pub fn run_program(
+    kind: Option<Kind>,
+    folder: &Path,
+    program: &Path,
+    args: &[&str],
+    extra_read: Option<&Path>,
+) -> Result<(Option<i32>, String)> {
     let folder = folder.canonicalize()?;
     let tmp = folder.join(".tmp");
     std::fs::create_dir_all(&tmp)?;
     let mut cmd = match kind {
-        Kind::MacOs => {
-            let mut c = Command::new("/usr/bin/sandbox-exec");
-            c.arg("-p").arg(macos_profile(&folder));
-            c.args(["/bin/sh", "-c", command]);
+        None => {
+            let mut c = Command::new(program);
+            c.args(args);
             c
         }
-        Kind::Bwrap => {
+        Some(Kind::MacOs) => {
+            let mut c = Command::new("/usr/bin/sandbox-exec");
+            c.arg("-p").arg(macos_profile(&folder, extra_read));
+            c.arg(program).args(args);
+            c
+        }
+        Some(Kind::Bwrap) => {
             let mut c = Command::new("bwrap");
             c.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
             c.args(["--tmpfs", "/tmp"]);
@@ -118,9 +144,12 @@ pub fn run(kind: Kind, folder: &Path, command: &str) -> Result<(Option<i32>, Str
                 c.arg("--tmpfs").arg(&data);
             }
             c.arg("--bind").arg(&folder).arg(&folder);
+            if let Some(p) = extra_read {
+                c.arg("--ro-bind").arg(p).arg(p);
+            }
             c.args(["--unshare-all", "--die-with-parent", "--new-session"]);
             c.arg("--chdir").arg(&folder);
-            c.args(["/bin/sh", "-c", command]);
+            c.arg(program).args(args);
             c
         }
     };

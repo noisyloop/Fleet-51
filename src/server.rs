@@ -72,6 +72,12 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/bots/{id}/run-code", post(bot_run_code))
         .route("/api/bots/{id}/delete", post(bot_delete))
         .route("/api/bots/{id}/undo", post(bot_undo))
+        .route(
+            "/api/bots/{id}/files",
+            post(add_file).layer(axum::extract::DefaultBodyLimit::max(
+                crate::files::MAX_BYTES + 1024,
+            )),
+        )
         .route("/api/bots/{id}/clear", post(bot_clear))
         .route("/api/automations/{id}/history/delete", post(delete_runs))
         .route("/api/bots/{id}/reveal", post(bot_reveal))
@@ -186,14 +192,52 @@ async fn history(State(d): D, Path(id): Path<String>, Query(q): Query<Since>) ->
 #[derive(Deserialize)]
 struct Text {
     text: String,
+    /// Names of files already added to the bot's folder (see add_file).
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 async fn send(State(d): D, Path(id): Path<String>, Json(t): Json<Text>) -> R<Value> {
     let s = d.bot(&id)?;
-    if t.text.trim().is_empty() {
+    if t.text.trim().is_empty() && t.attachments.is_empty() {
         return Err(anyhow::anyhow!("empty message").into());
     }
-    Ok(Json(json!({"id": d.prompt(&s, &t.text, None)})))
+    let folder = std::path::PathBuf::from(s.state().cwd);
+    let mut attachments = Vec::new();
+    for a in t.attachments.iter().take(20) {
+        let name = crate::files::clean_name(a);
+        if name != *a || !folder.join(&name).is_file() {
+            return Err(anyhow::anyhow!("{a} is not in {}'s folder", s.state().title).into());
+        }
+        attachments.push(name);
+    }
+    let text = if t.text.trim().is_empty() {
+        "Here are some files.".to_string()
+    } else {
+        t.text.clone()
+    };
+    Ok(Json(json!({"id": d.prompt(&s, &text, None, &attachments)})))
+}
+
+#[derive(Deserialize)]
+struct FileName {
+    name: String,
+}
+
+/// Add a file to a bot's folder (the request body is the file). Documents get a text copy.
+async fn add_file(
+    State(d): D,
+    Path(id): Path<String>,
+    Query(q): Query<FileName>,
+    body: axum::body::Bytes,
+) -> R<Value> {
+    let s = d.bot(&id)?;
+    let folder = std::path::PathBuf::from(s.state().cwd);
+    let exe = d.exe.clone();
+    let added =
+        tokio::task::spawn_blocking(move || crate::files::add(&folder, &exe, &q.name, &body))
+            .await??;
+    Ok(Json(json!(added)))
 }
 
 #[derive(Deserialize)]
@@ -257,16 +301,41 @@ async fn bot_delete(State(d): D, Path(id): Path<String>) -> R<Value> {
 }
 
 /// Show the bot's folder in Finder (or the Linux file manager).
-async fn bot_reveal(State(d): D, Path(id): Path<String>) -> R<Value> {
+#[derive(Deserialize, Default)]
+struct Reveal {
+    /// A file in the bot's folder to point at; the folder itself if left out.
+    path: Option<String>,
+}
+
+/// Show the bot's folder, or one of its files, in Finder (or the Linux file manager). Files
+/// are only ever shown, never opened.
+async fn bot_reveal(State(d): D, Path(id): Path<String>, body: Option<Json<Reveal>>) -> R<Value> {
     let s = d.bot(&id)?;
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
+    let folder = std::path::PathBuf::from(s.state().cwd).canonicalize()?;
+    let target = match body.and_then(|b| b.0.path) {
+        Some(p) => {
+            let t = folder.join(p.trim_start_matches('/')).canonicalize()?;
+            if !t.starts_with(&folder) {
+                return Err(anyhow::anyhow!("that file is outside the bot's folder").into());
+            }
+            t
+        }
+        None => folder,
     };
-    std::process::Command::new(opener)
-        .arg(s.state().cwd)
-        .spawn()?;
+    if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        if target.is_file() {
+            c.arg("-R");
+        }
+        c.arg(&target).spawn()?;
+    } else {
+        let dir = if target.is_file() {
+            target.parent().map(|p| p.to_path_buf()).unwrap_or(target)
+        } else {
+            target
+        };
+        std::process::Command::new("xdg-open").arg(dir).spawn()?;
+    }
     Ok(Json(json!({"ok": true})))
 }
 
