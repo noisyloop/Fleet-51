@@ -245,3 +245,6 @@ textarea.field { resize: vertical; min-height: 110px; }
 .hrow .full { white-space: pre-wrap; margin-top: 6px; }
 .hrow > button { border: 0; background: none; color: var(--muted); font-size: 16px; padding: 0 4px; }
 .hrow > button:hover { color: var(--danger); }
+
+/* A bot on an Ollama cloud model: its messages leave the computer */
+.cloud-note { font-size: 13px; color: #6cb6ff; background: rgba(108,182,255,.12); padding: 4px 10px; border-radius: 999px; cursor: help; white-space: nowrap; }

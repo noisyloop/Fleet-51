@@ -4,7 +4,10 @@ on:
   push:
     branches: [main]
     tags: ["v*", "[0-9]*"]
+    # Changes to documentation alone don't need a build.
+    paths-ignore: ["**.md", "docs/**", "**.txt"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "**.txt"]
   workflow_dispatch:
 
 permissions:

@@ -104,6 +104,9 @@ pub fn installed() -> Result<Vec<Value>> {
             "parameter_size": m["details"]["parameter_size"],
             "quantization": m["details"]["quantization_level"],
             "tools": caps.map(|c| c.iter().any(|x| x == "tools")),
+            // Ollama "cloud" models run on Ollama's servers: your messages leave this computer.
+            "cloud": m["remote_host"].is_string() || m["remote_model"].is_string()
+                || name.ends_with("-cloud") || name.ends_with(":cloud"),
         }));
     }
     Ok(out)

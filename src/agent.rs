@@ -387,6 +387,16 @@ fn say(session: &str, block: Value) {
     );
 }
 
+/// How an automation's instructions reach the bot: framed as a task the user set up, to carry out
+/// now without asking questions.
+fn automation_prompt(name: &str, instructions: &str) -> String {
+    format!(
+        "[Automation \"{name}\": a task the user scheduled earlier, running now on its own. The user \
+         is not here to answer questions, so do exactly what the instructions say and reply with \
+         the result only.]\n\n{instructions}"
+    )
+}
+
 /// Copy the folder aside before the bot changes it, and tell the daemon so the chat offers Undo.
 fn checkpoint(root: &Path, state_dir: Option<&Path>, session: &str) {
     let Some(dir) = state_dir.map(|d| d.join("checkpoints")) else {
@@ -492,6 +502,20 @@ pub fn run(o: Opts) -> Result<()> {
                 json!({"type": "system", "subtype": "init", "session_id": session, "model": model}),
             );
         }
+        // An automation runs as a standalone task: just the instructions, not the whole chat, so
+        // small models do what it says instead of carrying on the conversation.
+        let automation = msg["automation"].as_str().map(str::to_string);
+        let chat_history = automation.as_ref().map(|_| {
+            let system = messages
+                .first()
+                .cloned()
+                .unwrap_or(json!({"role": "system", "content": SYSTEM_PROMPT}));
+            std::mem::replace(&mut messages, vec![system])
+        });
+        let text = match &automation {
+            Some(name) => automation_prompt(name, &text),
+            None => text,
+        };
         messages.push(json!({"role": "user", "content": text}));
         let (mut tin, mut tout) = (0u64, 0u64);
         let mut last = String::new();
@@ -594,6 +618,15 @@ pub fn run(o: Opts) -> Result<()> {
             if step + 1 == o.max_steps {
                 last = format!("stopped after {} steps", o.max_steps);
             }
+        }
+        // Keep the automation's instructions and final answer in the chat's memory, so you can
+        // ask the bot about it afterwards.
+        if let Some(mut history) = chat_history {
+            history.push(json!({"role": "user", "content": text}));
+            if !last.is_empty() {
+                history.push(json!({"role": "assistant", "content": last}));
+            }
+            messages = history;
         }
         if let Some(f) = &state_file {
             let _ = std::fs::write(f, serde_json::to_string(&messages).unwrap_or_default());

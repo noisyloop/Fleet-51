@@ -40,6 +40,8 @@ for _ in $(seq 50); do [ "$(api /api/bots | json 'len(d)')" = "1" ] && break; sl
 "$BIN" status
 "$BIN" status | grep -q "models: ready (system" || fail "model engine not ready"
 FLEET=$(api /api/bots | json 'd[0]["id"]')
+[ "$(api /api/models | json "[m['cloud'] for m in d['installed'] if m['name'].endswith('-cloud')][0]")" = "True" ] || fail "cloud model not marked"
+[ "$(api /api/models | json "[m['cloud'] for m in d['installed'] if m['name']=='qwen3:1.7b'][0]")" = "False" ] || fail "local model marked as cloud"
 [ "$(api /api/bots | json 'd[0]["name"]')" = "Fleet" ] || fail "first bot is not called Fleet"
 
 step "Chat: the reply and its reasoning arrive"
@@ -116,6 +118,8 @@ wait_for "$SCOUT" "e['type']=='prompt_queued' and e.get('automation')=='Morning 
 for _ in $(seq 100); do [ "$(api /api/automations | json 'd[0]["last_status"]')" = "done" ] && break; sleep 0.2; done
 [ "$(api /api/automations | json 'd[0]["last_status"]')" = "done" ] || { api /api/automations; fail "automation run did not finish"; }
 [ "$(api /api/automations | json 'len(d[0]["history"])')" = "1" ] || fail "run not in history"
+# The bot gets the instructions as a standalone task (system prompt + task), not the whole chat.
+api /api/automations | json 'd[0]["last_result"]' | grep -q "with 2 messages" || { api /api/automations; fail "automation was not run as a standalone task"; }
 RUN=$(api /api/automations | json 'd[0]["history"][0]["id"]')
 api "/api/automations/$AUTO/history/delete" "{\"run\":\"$RUN\"}" >/dev/null
 [ "$(api /api/automations | json 'len(d[0]["history"])')" = "0" ] || fail "run not deleted from history"
