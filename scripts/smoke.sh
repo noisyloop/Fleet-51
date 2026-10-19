@@ -1,11 +1,25 @@
 #!/usr/bin/env bash
 # End-to-end check of Fleet-51 against a stand-in Ollama: first launch creates a bot, bots
 # chat (with reasoning), use different models, write files only inside their folder, and
-# survive an update handoff. Needs bash, curl and python3. Nothing outside a temp dir is touched.
+# survive an update handoff. Needs bash, curl and Python 3. Nothing outside a temp dir is touched.
+# Runs on Linux, macOS and Windows (Git Bash).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/fleet51-smoke.XXXXXX")"
+PY=python3
+WINDOWS=""
+if command -v cygpath >/dev/null 2>&1; then
+  # Windows: paths both bash and Windows programs understand (C:/Users/...).
+  WINDOWS=1
+  WORK="$(cygpath -m "$WORK")"
+  ROOT="$(cygpath -m "$ROOT")"
+  PY=python
+fi
+# Is this (Windows or Unix) process id still running?
+alive() {
+  if [ -n "$WINDOWS" ]; then tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q " $1 "; else kill -0 "$1" 2>/dev/null; fi
+}
 export FLEET51_HOME="$WORK/home" FLEET51_BOTS_DIR="$WORK/bots" OLLAMA_HOST="127.0.0.1:11499" FLEET51_ONLINE=1
 PORT=7499
 BIN="$ROOT/target/debug/fleet51"
@@ -20,18 +34,18 @@ trap cleanup EXIT
 step() { printf '\n== %s\n' "$*"; }
 fail() { echo "FAIL: $*"; exit 1; }
 api() { curl -sS -H "Authorization: Bearer $(cat "$FLEET51_HOME/token")" -H 'Content-Type: application/json' "http://127.0.0.1:$PORT$1" ${2:+-d "$2"}; }
-json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
+json() { "$PY" -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 # Wait until the bot's messages contain an event matching a Python expression over `e`.
 wait_for() {
   for _ in $(seq 100); do
-    if api "/api/bots/$1/messages" | python3 -c "import json,sys; sys.exit(0 if any($2 for e in json.load(sys.stdin)) else 1)"; then return 0; fi
+    if api "/api/bots/$1/messages" | "$PY" -c "import json,sys; sys.exit(0 if any($2 for e in json.load(sys.stdin)) else 1)"; then return 0; fi
     sleep 0.2
   done
   api "/api/bots/$1/messages"; echo; fail "timed out waiting for: $2"
 }
 
 (cd "$ROOT" && cargo build -q)
-python3 "$ROOT/scripts/fake_ollama.py" 11499 & FAKE_PID=$!
+"$PY" "$ROOT/scripts/fake_ollama.py" 11499 & FAKE_PID=$!
 sleep 1
 
 step "First launch: the service starts, finds Ollama and creates the first bot"
@@ -104,7 +118,7 @@ else
 fi
 
 step "Adding files: copied into the bot's folder, documents read in the sandbox, images seen"
-python3 "$ROOT/scripts/make_test_files.py" "$WORK/in"
+"$PY" "$ROOT/scripts/make_test_files.py" "$WORK/in"
 upload() { curl -sS -H "Authorization: Bearer $(cat "$FLEET51_HOME/token")" --data-binary "@$1" "http://127.0.0.1:$PORT/api/bots/$SCOUT/files?name=$2"; }
 upload "$WORK/in/report.pdf" report.pdf | grep -q '"text_file":"report.pdf.txt"' || fail "PDF text not read"
 grep -q "Fleet-51 test document" "$FLEET51_BOTS_DIR/Scout/report.pdf.txt" || fail "wrong PDF text"
@@ -144,10 +158,10 @@ api "/api/automations/$AUTO/history/delete" "{\"run\":\"$RUN\"}" >/dev/null
 [ "$(api /api/automations | json 'len(d[0]["history"])')" = "0" ] || fail "run not deleted from history"
 
 step "Update handoff: a newer service takes over and keeps the bots"
-OLD=$(python3 -c "import json; print(json.load(open('$FLEET51_HOME/daemon.json'))['pid'])")
+OLD=$("$PY" -c "import json; print(json.load(open('$FLEET51_HOME/daemon.json'))['pid'])")
 "$BIN" daemon --listen "127.0.0.1:$PORT" > "$WORK/daemon2.log" 2>&1 &
-for _ in $(seq 50); do kill -0 "$OLD" 2>/dev/null || break; sleep 0.2; done
-kill -0 "$OLD" 2>/dev/null && fail "old service still running"
+for _ in $(seq 50); do alive "$OLD" || break; sleep 0.2; done
+alive "$OLD" && fail "old service still running"
 for _ in $(seq 50); do api /api/health >/dev/null 2>&1 && break; sleep 0.2; done
 [ "$(api /api/bots | json 'len(d)')" = "2" ] || fail "bots lost in handoff"
 [ "$(api /api/automations | json 'len(d)')" = "1" ] || fail "automations lost in handoff"

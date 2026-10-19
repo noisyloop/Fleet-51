@@ -5,9 +5,9 @@
 <p align="center"><b>Your own fleet of alien AI bots, running privately on your computer.</b><br>
 Create a bot, give it a name and a face, pick a free model, and chat. Run as many as you like at once.</p>
 
-<p align="center"><a href="https://github.com/noisyloop/Fleet-51/releases/latest/download/Fleet-51-macos.dmg"><b>Download for Mac</b></a> · Apple Silicon and Intel · free and open source</p>
+<p align="center"><a href="https://github.com/noisyloop/Fleet-51/releases/latest/download/Fleet-51-macos.dmg"><b>Download for Mac</b></a> · <a href="https://github.com/noisyloop/Fleet-51/releases/latest/download/Fleet-51-windows-setup.exe"><b>Download for Windows</b></a> · free and open source</p>
 
-**Why local bots?** Your chats, files and automations never leave your Mac. There's no account,
+**Why local bots?** Your chats, files and automations never leave your computer. There's no account,
 no subscription, no usage limit, and it keeps working on a plane.
 
 ![Demo: creating an alien bot, chatting with its reasoning shown, a second bot, and a weekday automation](docs/screenshots/demo.gif)
@@ -73,8 +73,22 @@ Closing the window leaves your bots running in the background. **Fleet-51 › Qu
 (⌥⌘Q) stops everything. Updating is just installing a newer `.dmg`; the new version takes over from
 the old one and keeps your bots and chats.
 
-Windows and Linux packages are planned. On Linux you can build from source (below) with Ollama
-installed.
+## Install on Windows
+
+1. Download **[Fleet-51-windows-setup.exe](https://github.com/noisyloop/Fleet-51/releases/latest/download/Fleet-51-windows-setup.exe)**
+   (Windows 10 or 11, 64-bit).
+2. Run it. It installs for your user only, no administrator rights needed. The installer isn't signed
+   yet, so Windows may say "Windows protected your PC": choose **More info › Run anyway**.
+3. Fleet-51 opens and sets itself up the first time: it uses Ollama if you have it, otherwise it
+   downloads Ollama (about 1.5 GB, as it includes graphics-card support) and checks it against a
+   SHA-256 built into Fleet-51, then downloads the first model.
+
+Closing the window leaves your bots running; the alien icon in the system tray reopens it, and
+**Quit and Stop Bots** there stops everything. On Windows, **Run code** isn't available yet: Windows
+has no sandbox as simple as macOS's, so bots there can't run programs until one is built. Everything
+else works the same.
+
+On Linux you can build from source (below) with Ollama installed.
 
 ## Build from source
 
@@ -113,4 +127,4 @@ missed while the computer was asleep or off happens when Fleet-51 is next runnin
 
 ## Coming later
 
-Email notifications, Windows and Linux packages, and signed builds.
+Email notifications, Run code on Windows, a Linux package, and signed builds.

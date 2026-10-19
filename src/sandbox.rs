@@ -60,8 +60,7 @@ fn detect() -> Option<Kind> {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
+    Some(crate::home::user_home())
         .and_then(|h| h.canonicalize().ok())
         .unwrap_or_else(|| PathBuf::from("/nonexistent"))
 }
@@ -82,7 +81,10 @@ fn macos_profile(folder: &Path, extra_read: Option<&Path>) -> String {
     let extra = extra_read
         .map(|p| format!("(allow file-read-data (literal {}))\n", sb_str(p)))
         .unwrap_or_default();
-    // Later rules win: deny broadly, then allow the bot's folder back.
+    // Later rules win: deny broadly, then allow the bot's folder back. Beyond files and network,
+    // code must not reach other apps: no Apple Events (scripting Finder etc.), no LaunchServices
+    // (`open` would start apps outside the sandbox), no clipboard, keychain or window server,
+    // and no signals to processes outside the sandbox.
     format!(
         "(version 1)
 (allow default)
@@ -91,7 +93,21 @@ fn macos_profile(folder: &Path, extra_read: Option<&Path>) -> String {
 (allow file-write* (subpath {f}) (literal \"/dev/null\") (literal \"/dev/zero\") (regex #\"^/dev/fd/\") (regex #\"^/dev/tty\"))
 (deny file-read-data (subpath {h}))
 (allow file-read-data (subpath {f}))
-{extra}"
+{extra}(deny appleevent-send)
+(deny mach-lookup
+  (global-name \"com.apple.coreservices.launchservicesd\")
+  (global-name \"com.apple.lsd.mapdb\")
+  (global-name \"com.apple.lsd.modifydb\")
+  (global-name \"com.apple.pasteboard.1\")
+  (global-name \"com.apple.SecurityServer\")
+  (global-name \"com.apple.securityd.xpc\")
+  (global-name \"com.apple.windowserver.active\")
+  (global-name \"com.apple.coreservices.appleevents\"))
+(deny process-exec (literal \"/usr/bin/open\") (literal \"/usr/bin/osascript\") (literal \"/usr/bin/pbcopy\") (literal \"/usr/bin/pbpaste\"))
+(deny signal)
+(allow signal (target same-sandbox))
+(deny nvram*)
+"
     )
 }
 
@@ -134,6 +150,9 @@ pub fn run_program(
             let mut c = Command::new("bwrap");
             c.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
             c.args(["--tmpfs", "/tmp"]);
+            // /run holds the D-Bus session and display sockets: through them a program could ask
+            // the desktop to start things outside the sandbox.
+            c.args(["--tmpfs", "/run"]);
             // Hide the home folder (and Fleet-51's own data), then put the bot's folder back.
             let h = home();
             if h.is_dir() {
@@ -153,12 +172,29 @@ pub fn run_program(
             c
         }
     };
+    // A clean environment. Windows programs also need a few system variables to start at all.
+    let keep: Vec<(String, String)> = if cfg!(windows) {
+        [
+            "SystemRoot",
+            "SystemDrive",
+            "windir",
+            "PATH",
+            "PATHEXT",
+            "COMSPEC",
+        ]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+        .collect()
+    } else {
+        vec![(
+            "PATH".into(),
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into(),
+        )]
+    };
+    crate::home::no_window(&mut cmd);
     cmd.current_dir(&folder)
         .env_clear()
-        .env(
-            "PATH",
-            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        )
+        .envs(keep)
         .env("HOME", &folder)
         .env("TMPDIR", &tmp)
         .env("LANG", "en_US.UTF-8")
@@ -171,17 +207,28 @@ pub fn run_program(
         cmd.process_group(0);
     }
     let mut child = cmd.spawn().context("starting the sandbox")?;
+    // Output is collected as it arrives, so a program left running in the background that keeps
+    // the pipe open can't make Fleet-51 wait for it.
     let read = |r: Option<Box<dyn Read + Send>>| {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let b = buf.clone();
         std::thread::spawn(move || {
-            let mut buf = Vec::new();
             if let Some(mut r) = r {
-                let _ = r.by_ref().take(MAX_OUTPUT as u64 * 2).read_to_end(&mut buf);
-                // Drain the rest so the program never blocks on a full pipe.
-                let _ = std::io::copy(&mut r, &mut std::io::sink());
+                let mut chunk = [0u8; 8192];
+                while let Ok(n) = r.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    let mut b = b.lock().unwrap();
+                    if b.len() < MAX_OUTPUT * 2 {
+                        b.extend_from_slice(&chunk[..n]);
+                    }
+                }
             }
-            buf
-        })
+        });
+        buf
     };
+    let take = |b: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>| b.lock().unwrap().clone();
     let out = read(child.stdout.take().map(|r| Box::new(r) as _));
     let err = read(child.stderr.take().map(|r| Box::new(r) as _));
     let started = Instant::now();
@@ -202,8 +249,18 @@ pub fn run_program(
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let mut text = String::from_utf8_lossy(&out.join().unwrap_or_default()).to_string();
-    let err = String::from_utf8_lossy(&err.join().unwrap_or_default()).to_string();
+    // Stop anything the command left running in the background, then give the readers a moment.
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{}", child.id())])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let mut text = String::from_utf8_lossy(&take(&out)).to_string();
+    let err = String::from_utf8_lossy(&take(&err)).to_string();
     if !err.trim().is_empty() {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
@@ -246,6 +303,34 @@ mod tests {
         // Refused (macOS) or written to a throwaway view of the disk (bubblewrap); never real.
         let _ = run(kind, &folder, "echo nope > ../outside.txt").unwrap();
         assert!(!base.join("outside.txt").exists());
+        // A program left running in the background is stopped, and doesn't hold things up.
+        let started = Instant::now();
+        let (_, out) = run(
+            kind,
+            &folder,
+            "(sleep 30; echo late > late.txt) & echo started",
+        )
+        .unwrap();
+        assert!(out.contains("started"), "{out}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "waited for the background program"
+        );
+        std::thread::sleep(Duration::from_secs(1));
+        // Code can't reach other apps or the desktop session.
+        if kind == Kind::MacOs {
+            for cmd in [
+                "osascript -e 'tell application \"Finder\" to get name'",
+                "open -g -a TextEdit",
+                "pbpaste",
+            ] {
+                let (code, out) = run(kind, &folder, cmd).unwrap();
+                assert_ne!(code, Some(0), "{cmd} worked in the sandbox: {out}");
+            }
+        } else {
+            let (_, out) = run(kind, &folder, "ls -A /run | wc -l").unwrap();
+            assert_eq!(out.trim(), "0", "/run is visible in the sandbox");
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 }

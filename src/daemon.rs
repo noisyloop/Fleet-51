@@ -56,9 +56,7 @@ pub const BOT_COLORS: &[&str] = &[
 fn bots_root() -> PathBuf {
     std::env::var_os("FLEET51_BOTS_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into())).join("Fleet-51")
-        })
+        .unwrap_or_else(|| crate::home::user_home().join("Fleet-51"))
 }
 
 pub struct Daemon {

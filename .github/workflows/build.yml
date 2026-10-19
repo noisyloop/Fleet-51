@@ -42,17 +42,10 @@ jobs:
             target/aarch64-apple-darwin/release/fleet51 \
             target/x86_64-apple-darwin/release/fleet51
           lipo -info dist/fleet51
+      - name: Unit tests on macOS (including the sandbox's limits)
+        run: cargo test
       - name: End-to-end smoke test on macOS
         run: scripts/smoke.sh
-      - name: Check a release tag matches the version in Cargo.toml
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          TAG="${GITHUB_REF_NAME#v}"
-          if [ "$TAG" != "$VERSION" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match version $VERSION in Cargo.toml. The release was probably created from an older commit; delete it and its tag, then create it again from the latest main."
-            exit 1
-          fi
       - name: Package Fleet-51.dmg
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -91,9 +84,84 @@ jobs:
         with:
           name: Fleet-51-macos
           path: dist/Fleet-51-macos.dmg
+
+  windows:
+    name: Windows app (installer)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint on Windows
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --release
+      - name: Unit tests on Windows
+        run: cargo test
+      - name: End-to-end smoke test on Windows (stand-in Ollama)
+        shell: bash
+        run: scripts/smoke.sh
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc "/DVersion=$version" "/DSourceDir=$PWD\target\release" "/O$PWD\dist" packaging\windows\fleet51.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Item dist\Fleet-51-windows-setup.exe
+      - name: Install it, open the app, and check it sets itself up
+        shell: pwsh
+        run: |
+          Start-Process dist\Fleet-51-windows-setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          $app = "$env:LOCALAPPDATA\Programs\Fleet-51"
+          & "$app\fleet51.exe" --version
+          Start-Process "$app\fleet51-app.exe"
+          # No Ollama on the runner: the app must download the pinned build, verify it and start it.
+          $status = ""
+          for ($i = 0; $i -lt 300; $i++) {
+            $status = (& "$app\fleet51.exe" status 2>$null) -join "`n"
+            if ($status -match "models: (ready|failed)") { break }
+            Start-Sleep -Seconds 3
+          }
+          $status
+          if ($status -notmatch "models: ready \(managed") {
+            Get-Content "$env:USERPROFILE\.fleet51\runtime\ollama.log" -ErrorAction SilentlyContinue
+            Get-Content "$env:USERPROFILE\.fleet51\daemon.log" -ErrorAction SilentlyContinue
+            exit 1
+          }
+          Start-Sleep -Seconds 5
+          Get-Process fleet51-app
+          & "$app\fleet51.exe" down
+          Stop-Process -Name fleet51-app -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fleet-51-windows
+          path: dist/Fleet-51-windows-setup.exe
+
+  release:
+    name: Release
+    needs: [test, macos, windows]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Fleet-51-*
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - name: Check a release tag matches the version in Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $VERSION in Cargo.toml. The release was probably created from an older commit; delete it and its tag, then create it again from the latest main."
+            exit 1
+          fi
       # Merging a new version into main publishes it: no manual release needed.
       - name: Publish a release when main has a new version
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -102,10 +170,12 @@ jobs:
             echo "v$VERSION is already released; nothing to publish."
             exit 0
           fi
-          gh release create "v$VERSION" dist/Fleet-51-macos.dmg --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" --title "Fleet-51 $VERSION" --generate-notes --latest
+          gh release create "v$VERSION" dist/Fleet-51-macos.dmg dist/Fleet-51-windows-setup.exe \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Fleet-51 $VERSION" --generate-notes --latest
       - name: Attach to GitHub release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Fleet-51-macos.dmg
+          files: |
+            dist/Fleet-51-macos.dmg
+            dist/Fleet-51-windows-setup.exe

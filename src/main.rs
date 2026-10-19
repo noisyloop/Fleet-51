@@ -157,6 +157,12 @@ fn up(home: &Home, listen: &str) -> Result<()> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    // Windows: detached, in its own process group, with no console window.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0008 | 0x0000_0200 | home::CREATE_NO_WINDOW);
+    }
     cmd.spawn().context("starting the background service")?;
     for _ in 0..100 {
         std::thread::sleep(Duration::from_millis(100));

@@ -1,8 +1,8 @@
 //! The local model runtime, so Fleet-51 works out of the box. In order of preference:
 //! 1. an Ollama the user is already running (OLLAMA_HOST or 127.0.0.1:11434);
 //! 2. a Fleet-51-managed Ollama on a private port, started from an `ollama` already installed;
-//! 3. on macOS, a pinned Ollama release downloaded on first launch and checked against a
-//!    SHA-256 built into Fleet-51 (the same hash Ollama publishes in sha256sum.txt).
+//! 3. on macOS and Windows, a pinned Ollama release downloaded on first launch and checked
+//!    against a SHA-256 built into Fleet-51 (the same hash Ollama publishes in sha256sum.txt).
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +18,13 @@ use crate::home::Home;
 
 pub const OLLAMA_VERSION: &str = "v0.40.6";
 const DARWIN_TGZ_SHA256: &str = "b2b55434865a668decb494110d7fd970eed3ecc8837be2872f672ccbb95df974";
+const WINDOWS_ZIP_SHA256: &str = "e359637575302f288d76c0007c408a4be9c7376d59c4f28684d63b232a44b427";
+/// The Ollama program's file name on this system.
+const OLLAMA_EXE: &str = if cfg!(windows) {
+    "ollama.exe"
+} else {
+    "ollama"
+};
 const MANAGED_ADDR: &str = "127.0.0.1:11435";
 /// Pulled automatically on first launch when no model is installed.
 pub const DEFAULT_MODEL: &str = "qwen3:1.7b";
@@ -72,6 +79,8 @@ fn system_root() -> String {
 }
 
 fn on_path(cmd: &str) -> Option<PathBuf> {
+    let local =
+        std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Programs").join("Ollama"));
     [
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -79,6 +88,7 @@ fn on_path(cmd: &str) -> Option<PathBuf> {
     ]
     .iter()
     .map(PathBuf::from)
+    .chain(local)
     .chain(
         std::env::var_os("PATH")
             .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
@@ -89,11 +99,15 @@ fn on_path(cmd: &str) -> Option<PathBuf> {
 }
 
 /// Download the pinned macOS build into `dir`, reporting progress, and verify its checksum.
-fn download_darwin(dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
+/// Download `file` from the pinned Ollama release into `dir`, checking its SHA-256.
+fn download_checked(
+    dir: &Path,
+    file: &str,
+    sha256: &str,
+    report: &dyn Fn(Runtime),
+) -> Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let url = format!(
-        "https://github.com/ollama/ollama/releases/download/{OLLAMA_VERSION}/ollama-darwin.tgz"
-    );
+    let url = format!("https://github.com/ollama/ollama/releases/download/{OLLAMA_VERSION}/{file}");
     let resp = ureq::get(&url).call().context("downloading Ollama")?;
     let total = resp
         .headers()
@@ -102,8 +116,8 @@ fn download_darwin(dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     let mut reader = resp.into_body().into_with_config().limit(u64::MAX).reader();
-    let tgz = dir.join("ollama-darwin.tgz.part");
-    let mut file = std::fs::File::create(&tgz)?;
+    let part = dir.join(format!("{file}.part"));
+    let mut out = std::fs::File::create(&part)?;
     let mut hash = Sha256::new();
     let mut buf = vec![0u8; 1 << 16];
     let (mut done, mut last) = (0u64, Instant::now());
@@ -112,7 +126,7 @@ fn download_darwin(dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
         if n == 0 {
             break;
         }
-        file.write_all(&buf[..n])?;
+        out.write_all(&buf[..n])?;
         hash.update(&buf[..n]);
         done += n as u64;
         if last.elapsed() > Duration::from_millis(250) {
@@ -123,12 +137,17 @@ fn download_darwin(dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
             });
         }
     }
-    file.flush()?;
+    out.flush()?;
     let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    if got != DARWIN_TGZ_SHA256 {
-        let _ = std::fs::remove_file(&tgz);
+    if got != sha256 {
+        let _ = std::fs::remove_file(&part);
         bail!("Ollama download failed its checksum (got {got}); nothing was installed");
     }
+    Ok(part)
+}
+
+fn download_darwin(dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
+    let tgz = download_checked(dir, "ollama-darwin.tgz", DARWIN_TGZ_SHA256, report)?;
     let status = Command::new("tar")
         .arg("-xzf")
         .arg(&tgz)
@@ -140,6 +159,34 @@ fn download_darwin(dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
         bail!("could not unpack Ollama");
     }
     Ok(dir.join("ollama"))
+}
+
+/// Windows: the pinned zip (it includes GPU support, so it is large), unpacked safely: every
+/// entry must stay inside `dir`.
+fn download_windows(dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
+    let zip_path = download_checked(dir, "ollama-windows-amd64.zip", WINDOWS_ZIP_SHA256, report)?;
+    let unpacked = (|| -> Result<()> {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(&zip_path)?)?;
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i)?;
+            let Some(rel) = entry.enclosed_name() else {
+                bail!("unexpected path in the Ollama download");
+            };
+            let to = dir.join(rel);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&to)?;
+                continue;
+            }
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::io::copy(&mut entry, &mut std::fs::File::create(&to)?)?;
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&zip_path);
+    unpacked.context("could not unpack Ollama")?;
+    Ok(dir.join(OLLAMA_EXE))
 }
 
 /// Find or set up Ollama. Returns the managed child process if Fleet-51 started one.
@@ -161,12 +208,14 @@ pub fn ensure(home: &Home, report: &dyn Fn(Runtime)) -> Result<Option<Child>> {
         .root
         .join("runtime")
         .join(format!("ollama-{OLLAMA_VERSION}"));
-    let bin = if dir.join("ollama").is_file() {
-        dir.join("ollama")
-    } else if let Some(installed) = on_path("ollama") {
+    let bin = if dir.join(OLLAMA_EXE).is_file() {
+        dir.join(OLLAMA_EXE)
+    } else if let Some(installed) = on_path(OLLAMA_EXE) {
         installed
     } else if cfg!(target_os = "macos") {
         download_darwin(&dir, report)?
+    } else if cfg!(windows) {
+        download_windows(&dir, report)?
     } else {
         bail!("Ollama is not installed. Install it from https://ollama.com and reopen Fleet-51.");
     };
@@ -174,12 +223,14 @@ pub fn ensure(home: &Home, report: &dyn Fn(Runtime)) -> Result<Option<Child>> {
     std::fs::create_dir_all(home.root.join("runtime"))?;
     let log = std::fs::File::create(home.root.join("runtime").join("ollama.log"))?;
     let log_path = home.root.join("runtime").join("ollama.log");
-    let mut child = Command::new(&bin)
-        .arg("serve")
+    let mut cmd = Command::new(&bin);
+    cmd.arg("serve")
         .env("OLLAMA_HOST", MANAGED_ADDR)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
-        .stderr(log)
+        .stderr(log);
+    crate::home::no_window(&mut cmd);
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("starting {}", bin.display()))?;
     // The first start of a freshly downloaded Ollama can take minutes while macOS checks it.
@@ -226,12 +277,34 @@ fn log_tail(path: &std::path::Path) -> String {
 
 /// This computer's memory in GB, to suggest a model that fits.
 pub fn memory_gb() -> Option<u64> {
-    let bytes = if cfg!(target_os = "macos") {
+    static MEMORY: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *MEMORY.get_or_init(read_memory_gb)
+}
+
+fn read_memory_gb() -> Option<u64> {
+    let bytes = if cfg!(windows) {
+        let mut c = Command::new("powershell.exe");
+        c.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+        ]);
+        crate::home::no_window(&mut c);
+        let out = c.output().ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<u64>()
+            .ok()?
+    } else if cfg!(target_os = "macos") {
         let out = Command::new("/usr/sbin/sysctl")
             .args(["-n", "hw.memsize"])
             .output()
             .ok()?;
-        String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()?
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<u64>()
+            .ok()?
     } else {
         let info = std::fs::read_to_string("/proc/meminfo").ok()?;
         let kb = info
