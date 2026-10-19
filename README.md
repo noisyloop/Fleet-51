@@ -101,10 +101,7 @@ scripts/smoke.sh                # end-to-end test against a stand-in Ollama
 
 ## Credits
 
-Fleet-51 began as a teardown of [Orca](https://github.com/stablyai/orca) by Stably AI (MIT
-licensed); the analysis is in [`docs/orca-teardown.md`](docs/orca-teardown.md). Fleet-51 is an
-independent implementation in Rust and Swift: it contains no Orca code. Models run through
-[Ollama](https://ollama.com) (MIT licensed).
+Models run through [Ollama](https://ollama.com) (MIT licensed).
 
 ## Automations
 
