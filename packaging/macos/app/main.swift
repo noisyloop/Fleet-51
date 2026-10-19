@@ -58,20 +58,26 @@ final class ChatWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDe
     // Links outside Fleet-51 open in the default browser; Fleet-51 links open a new app window.
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let u = action.request.url, let host = u.host, host != app.home?.host, u.scheme?.hasPrefix("http") == true {
-            NSWorkspace.shared.open(u)
-            decisionHandler(.cancel)
-        } else {
+        // Only Fleet-51's own pages load in the window. Web links open in the browser; anything
+        // else (file:, other schemes) is refused rather than opened.
+        guard let u = action.request.url else { decisionHandler(.cancel); return }
+        let web = u.scheme == "http" || u.scheme == "https"
+        if web && u.host == app.home?.host && u.port == app.home?.port {
             decisionHandler(.allow)
+        } else if u.scheme == "about" {
+            decisionHandler(.allow)
+        } else {
+            if u.scheme == "https" { NSWorkspace.shared.open(u) }
+            decisionHandler(.cancel)
         }
     }
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if let u = action.request.url {
-            if u.host == app.home?.host {
+            if (u.scheme == "http" || u.scheme == "https") && u.host == app.home?.host && u.port == app.home?.port {
                 app.openWindow(url: u)
-            } else {
+            } else if u.scheme == "https" {
                 NSWorkspace.shared.open(u)
             }
         }

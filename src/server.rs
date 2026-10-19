@@ -100,7 +100,50 @@ pub fn router(d: Arc<Daemon>) -> Router {
         // Older versions installed a caching service worker; this one removes itself.
         .route("/sw.js", asset!("text/javascript", "../ui/sw.js"))
         .merge(api)
+        .layer(middleware::from_fn_with_state(d.clone(), guard))
         .with_state(d)
+}
+
+/// For every request: refuse other host names while listening on this computer only (so a web
+/// page can't reach the service through DNS rebinding), and tell browsers to run only Fleet-51's
+/// own scripts and never show it inside another site's frame.
+async fn guard(State(d): D, req: Request, next: Next) -> Response {
+    let local_only = d
+        .url
+        .strip_prefix("http://")
+        .and_then(|h| h.rsplit_once(':'))
+        .is_some_and(|(ip, _)| ip == "127.0.0.1" || ip == "[::1]" || ip == "localhost");
+    if local_only {
+        let host = req
+            .headers()
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let name = host.rsplit_once(':').map(|(n, _)| n).unwrap_or(host);
+        if !matches!(name, "127.0.0.1" | "localhost" | "[::1]") {
+            return (StatusCode::FORBIDDEN, "unexpected host").into_response();
+        }
+    }
+    let mut res = next.run(req).await;
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; \
+             form-action 'none'; frame-ancestors 'none'",
+        ),
+    );
+    h.insert(header::X_FRAME_OPTIONS, header::HeaderValue::from_static("DENY"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        header::HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        header::HeaderValue::from_static("no-referrer"),
+    );
+    res
 }
 
 async fn auth(State(d): D, req: Request, next: Next) -> Response {
@@ -323,9 +366,13 @@ async fn bot_reveal(State(d): D, Path(id): Path<String>, body: Option<Json<Revea
         None => folder,
     };
     if cfg!(target_os = "macos") {
-        let mut c = std::process::Command::new("open");
+        // Always through Finder: `open <folder>` would launch a folder that looks like an app
+        // (a bot could build "x.app" in its folder).
+        let mut c = std::process::Command::new("/usr/bin/open");
         if target.is_file() {
             c.arg("-R");
+        } else {
+            c.args(["-a", "Finder"]);
         }
         c.arg(&target).spawn()?;
     } else {

@@ -82,7 +82,10 @@ fn macos_profile(folder: &Path, extra_read: Option<&Path>) -> String {
     let extra = extra_read
         .map(|p| format!("(allow file-read-data (literal {}))\n", sb_str(p)))
         .unwrap_or_default();
-    // Later rules win: deny broadly, then allow the bot's folder back.
+    // Later rules win: deny broadly, then allow the bot's folder back. Beyond files and network,
+    // code must not reach other apps: no Apple Events (scripting Finder etc.), no LaunchServices
+    // (`open` would start apps outside the sandbox), no clipboard, keychain or window server,
+    // and no signals to processes outside the sandbox.
     format!(
         "(version 1)
 (allow default)
@@ -91,7 +94,21 @@ fn macos_profile(folder: &Path, extra_read: Option<&Path>) -> String {
 (allow file-write* (subpath {f}) (literal \"/dev/null\") (literal \"/dev/zero\") (regex #\"^/dev/fd/\") (regex #\"^/dev/tty\"))
 (deny file-read-data (subpath {h}))
 (allow file-read-data (subpath {f}))
-{extra}"
+{extra}(deny appleevent-send)
+(deny mach-lookup
+  (global-name \"com.apple.coreservices.launchservicesd\")
+  (global-name \"com.apple.lsd.mapdb\")
+  (global-name \"com.apple.lsd.modifydb\")
+  (global-name \"com.apple.pasteboard.1\")
+  (global-name \"com.apple.SecurityServer\")
+  (global-name \"com.apple.securityd.xpc\")
+  (global-name \"com.apple.windowserver.active\")
+  (global-name \"com.apple.coreservices.appleevents\"))
+(deny process-exec (literal \"/usr/bin/open\") (literal \"/usr/bin/osascript\") (literal \"/usr/bin/pbcopy\") (literal \"/usr/bin/pbpaste\"))
+(deny signal)
+(allow signal (target same-sandbox))
+(deny nvram*)
+"
     )
 }
 
@@ -134,6 +151,9 @@ pub fn run_program(
             let mut c = Command::new("bwrap");
             c.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
             c.args(["--tmpfs", "/tmp"]);
+            // /run holds the D-Bus session and display sockets: through them a program could ask
+            // the desktop to start things outside the sandbox.
+            c.args(["--tmpfs", "/run"]);
             // Hide the home folder (and Fleet-51's own data), then put the bot's folder back.
             let h = home();
             if h.is_dir() {
@@ -246,6 +266,20 @@ mod tests {
         // Refused (macOS) or written to a throwaway view of the disk (bubblewrap); never real.
         let _ = run(kind, &folder, "echo nope > ../outside.txt").unwrap();
         assert!(!base.join("outside.txt").exists());
+        // Code can't reach other apps or the desktop session.
+        if kind == Kind::MacOs {
+            for cmd in [
+                "osascript -e 'tell application \"Finder\" to get name'",
+                "open -g -a TextEdit",
+                "pbpaste",
+            ] {
+                let (code, out) = run(kind, &folder, cmd).unwrap();
+                assert_ne!(code, Some(0), "{cmd} worked in the sandbox: {out}");
+            }
+        } else {
+            let (_, out) = run(kind, &folder, "ls -A /run | wc -l").unwrap();
+            assert_eq!(out.trim(), "0", "/run is visible in the sandbox");
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 }

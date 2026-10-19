@@ -42,6 +42,8 @@ jobs:
             target/aarch64-apple-darwin/release/fleet51 \
             target/x86_64-apple-darwin/release/fleet51
           lipo -info dist/fleet51
+      - name: Unit tests on macOS (including the sandbox's limits)
+        run: cargo test
       - name: End-to-end smoke test on macOS
         run: scripts/smoke.sh
       - name: Check a release tag matches the version in Cargo.toml
