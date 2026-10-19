@@ -3,7 +3,7 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    tags: ["v*", "[0-9]*"]
   pull_request:
   workflow_dispatch:
 
@@ -41,6 +41,15 @@ jobs:
           lipo -info dist/fleet51
       - name: End-to-end smoke test on macOS
         run: scripts/smoke.sh
+      - name: Check a release tag matches the version in Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $VERSION in Cargo.toml. The release was probably created from an older commit; delete it and its tag, then create it again from the latest main."
+            exit 1
+          fi
       - name: Package Fleet-51.dmg
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -80,7 +89,7 @@ jobs:
           name: Fleet-51-macos
           path: dist/Fleet-51-macos.dmg
       - name: Attach to GitHub release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/Fleet-51-macos.dmg
