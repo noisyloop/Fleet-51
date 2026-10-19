@@ -6,9 +6,16 @@ outside its folder; "break it" overwrites notes.md; "run code" runs a command th
 write outside the folder.
 """
 import json
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+DEMO = os.environ.get("FAKE_DEMO") == "1"
+DEMO_REPLIES = [
+    ("haiku", "Lights over the dunes,\nthe fleet hums in quiet code,\nno one sees us land.", "A haiku is 5-7-5. Area 51 is in the Nevada desert, so: dunes, lights, a quiet fleet."),
+    ("plan", "Here's your week:\n\n- **Mon**: finish the report draft\n- **Wed**: review notes with the team\n- **Fri**: send the final version", "The notes mention a report due Friday, so work backwards from that."),
+]
 
 MODELS = {"qwen3:1.7b": 1107409472, "qwen3:0.6b": 396705472, "gemma4:e4b": 9600000000}
 
@@ -56,6 +63,12 @@ class H(BaseHTTPRequestHandler):
             if model not in MODELS:
                 return self.send({"error": {"message": f"model '{model}' not found"}}, 404)
             last = b["messages"][-1]
+            # For recording the README demo: a couple of short, plausible replies.
+            if DEMO and isinstance(last.get("content"), str) and last["role"] == "user":
+                for key, reply, why in DEMO_REPLIES:
+                    if key in last["content"].lower():
+                        time.sleep(1.2)
+                        return self.send({"choices": [{"message": {"role": "assistant", "content": reply, "reasoning": why}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
             if isinstance(last.get("content"), list):
                 images = sum(1 for p in last["content"] if p.get("type") == "image_url" and p["image_url"]["url"].startswith("data:image/png;base64,"))
                 text = " ".join(p.get("text", "") for p in last["content"] if p.get("type") == "text")

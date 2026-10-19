@@ -223,3 +223,25 @@ fn log_tail(path: &std::path::Path) -> String {
         format!("{tail} (see {})", path.display())
     }
 }
+
+/// This computer's memory in GB, to suggest a model that fits.
+pub fn memory_gb() -> Option<u64> {
+    let bytes = if cfg!(target_os = "macos") {
+        let out = Command::new("/usr/sbin/sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()?
+    } else {
+        let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let kb = info
+            .lines()
+            .find(|l| l.starts_with("MemTotal:"))?
+            .split_whitespace()
+            .nth(1)?
+            .parse::<u64>()
+            .ok()?;
+        kb * 1024
+    };
+    Some((bytes + (1 << 29)) >> 30)
+}

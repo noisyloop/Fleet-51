@@ -266,3 +266,7 @@ textarea.field { resize: vertical; min-height: 110px; }
 .browse:hover { text-decoration: underline; }
 .custom-model input { width: 100%; }
 .model-lists { display: flex; flex-direction: column; gap: 22px; width: 100%; }
+
+/* One-time tip: a bigger model once setup is done */
+.tip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px max(16px, calc((100% - 792px) / 2)) 0; padding: 10px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--panel); font-size: 14px; }
+.tip span { flex: 1; min-width: 200px; }

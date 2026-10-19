@@ -23,7 +23,7 @@ pub const SUGGESTED: &[(&str, &str, bool, &str)] = &[
         "qwen3:4b",
         "2.5 GB",
         true,
-        "Noticeably better, still laptop-sized",
+        "Recommended: much better at files and code, still laptop-sized",
     ),
     ("qwen2.5-coder:1.5b", "1.0 GB", true, "Small coding model"),
     (

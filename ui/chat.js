@@ -118,6 +118,7 @@ let runtime = { state: 'checking' };
 let defaultModel = 'qwen3:1.7b';
 let lastSeq = 0;
 let online = true;
+let memoryGb = null;
 let sandbox = false;
 let autos = [];
 let prompts = new Map();
@@ -141,7 +142,7 @@ function renderBots() {
 }
 function preview(b) {
   if (b.status === 'working') return 'Thinking…';
-  return (b.preview || 'Say hello').replace(/\s+/g, ' ');
+  return (b.preview || 'Say hello').replace(/[*_`#>]+/g, '').replace(/\s+/g, ' ').trim();
 }
 
 // Right-click (or long-press) on a bot.
@@ -246,6 +247,7 @@ function renderCloud() {
 
 function renderModelSelect() {
   renderCloud();
+  renderUpgrade();
   const b = bot();
   const sel = $('#model-select');
   const names = [...new Set([...(installed.map((m) => m.name)), ...(b && b.model ? [b.model] : [])])];
@@ -686,6 +688,29 @@ function renderAutos() {
   }));
 }
 
+// The first model is small so setup is quick; once it works, offer a smarter one that fits.
+const UPGRADE = 'qwen3:4b';
+let upgradeFor = null; // bot to switch once the download finishes
+function renderUpgrade() {
+  const b = bot();
+  const have = installed.some((m) => m.name === UPGRADE);
+  const p = pulls.get(UPGRADE);
+  const show = b && b.model === defaultModel && !have && (memoryGb == null || memoryGb >= 8) && !store.get('upgrade-dismissed', false) && runtime.state === 'ready' && installed.length > 0;
+  $('#upgrade-tip').hidden = !show;
+  if (!show) return;
+  const busy = p && !p.done;
+  $('#upgrade-text').textContent = busy ? `Downloading ${UPGRADE}… ${pct(p)}%` : `Want smarter answers, especially for files and code? ${UPGRADE} (2.5 GB) is a big step up from ${defaultModel}${memoryGb ? ` and fits your ${memoryGb} GB Mac` : ''}.`;
+  $('#upgrade-yes').hidden = busy;
+}
+async function maybeSwitchAfterUpgrade(p) {
+  if (p.name !== UPGRADE || !p.done || p.error || !upgradeFor) return;
+  const b = bots.find((x) => x.id === upgradeFor);
+  upgradeFor = null;
+  if (b && b.model === defaultModel) {
+    try { Object.assign(b, await api(`/api/bots/${b.id}/model`, { model: UPGRADE })); renderModelSelect(); toast(`${b.name} now uses ${UPGRADE}`); } catch (e) { toast(e.message); }
+  }
+}
+
 // ---- first-run setup -------------------------------------------------------------------
 function renderSetup() {
   const ready = runtime.state === 'ready';
@@ -736,6 +761,7 @@ async function boot() {
     runtime = r.runtime;
     defaultModel = r.default_model;
     setOnline(r.online !== false);
+    memoryGb = r.memory_gb;
     sandbox = !!r.sandbox;
     autos = await api('/api/automations');
     await loadModels();
@@ -749,6 +775,7 @@ async function boot() {
     if (msg.kind === 'runtime') { runtime = msg; renderSetup(); if (msg.state === 'ready') loadModels(); return; }
     if (msg.kind === 'pull') {
       pulls.set(msg.name, msg);
+      if (msg.done) maybeSwitchAfterUpgrade(msg);
       if (msg.done) { loadModels(); if (msg.error) toast(`${msg.name}: ${msg.error}`); }
       renderSetup(); renderModelSelect(); renderModelsDialog();
       return;
@@ -785,6 +812,8 @@ $('#btn-search').onclick = () => { const w = $('#search-wrap'); w.hidden = !w.hi
 $('#search').oninput = renderBots;
 $('#btn-models').onclick = () => { modelQuery = ''; modelFind.value = ''; $('#models-dlg').showModal(); renderModelsDialog(); modelFind.focus(); loadModels().then(renderModelsDialog); };
 $('#btn-autos').onclick = openAutos;
+$('#upgrade-yes').onclick = () => { const b = bot(); upgradeFor = b ? b.id : null; download(UPGRADE).then(renderUpgrade); };
+$('#upgrade-no').onclick = () => { store.set('upgrade-dismissed', true); renderUpgrade(); };
 $('#autos-new').onclick = () => openAuto(null);
 $('#menu-auto').onclick = () => { const b = bot(); if (b) openAuto(null, b.id); };
 $('#auto-name').oninput = validAuto;
