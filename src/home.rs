@@ -21,7 +21,7 @@ impl Home {
     }
 
     pub fn ensure(&self) -> anyhow::Result<()> {
-        for d in ["sessions", "workspaces", "agents", "accounts"] {
+        for d in ["sessions", "runtime"] {
             std::fs::create_dir_all(self.root.join(d))?;
         }
         Ok(())
@@ -29,15 +29,6 @@ impl Home {
 
     pub fn sessions(&self) -> PathBuf {
         self.root.join("sessions")
-    }
-    pub fn workspaces(&self) -> PathBuf {
-        self.root.join("workspaces")
-    }
-    pub fn agents(&self) -> PathBuf {
-        self.root.join("agents")
-    }
-    pub fn accounts(&self) -> PathBuf {
-        self.root.join("accounts")
     }
     pub fn daemon_file(&self) -> PathBuf {
         self.root.join("daemon.json")

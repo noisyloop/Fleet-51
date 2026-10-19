@@ -20,8 +20,8 @@ jobs:
         run: cargo clippy -- -D warnings
       - name: Unit tests
         run: cargo test
-      - name: End-to-end demo with mock agents
-        run: scripts/demo.sh
+      - name: End-to-end smoke test (stand-in Ollama)
+        run: scripts/smoke.sh
 
   macos:
     name: macOS app (.dmg)
@@ -39,8 +39,8 @@ jobs:
             target/aarch64-apple-darwin/release/fleet51 \
             target/x86_64-apple-darwin/release/fleet51
           lipo -info dist/fleet51
-      - name: End-to-end demo on macOS
-        run: scripts/demo.sh
+      - name: End-to-end smoke test on macOS
+        run: scripts/smoke.sh
       - name: Package Fleet-51.dmg
         run: |
           VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)

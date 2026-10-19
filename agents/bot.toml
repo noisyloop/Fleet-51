@@ -1,9 +1,0 @@
-# A chat bot: the built-in agent with an assistant persona, running on the local Ollama.
-# Created from the "New bot" button; each bot has its own folder and model.
-name = "bot"
-display = "Bot (local model)"
-protocol = "claude-stream-json"
-command = ["{fleet51}", "agent", "--provider", "ollama", "--persona", "assistant", "--state-dir", "{overlay}", "--replay-user-messages"]
-resume_args = ["--resume", "{session}"]
-model_args = ["--model", "{model}"]
-rate_limit_pattern = "(?i)(429|rate.?limit)"

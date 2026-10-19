@@ -1,6 +1,0 @@
-name = "mock-acp"
-display = "Mock (ACP)"
-protocol = "acp"
-command = ["{fleet51}", "mock-agent", "--protocol", "acp"]
-rate_limit_pattern = "(?i)(rate.?limit|usage limit)"
-sandbox_image = "debian:stable-slim"

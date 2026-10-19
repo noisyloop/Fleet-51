@@ -71,16 +71,6 @@ impl Client {
         Self::finish(resp)
     }
 
-    pub fn delete(&self, path: &str) -> Result<Value> {
-        let resp = self
-            .agent
-            .delete(&format!("{}{path}", self.base))
-            .header("Authorization", &self.auth())
-            .call()
-            .context("contacting daemon")?;
-        Self::finish(resp)
-    }
-
     /// Read a server-sent event stream; `f` returns false to stop.
     pub fn stream(&self, path: &str, mut f: impl FnMut(Value) -> bool) -> Result<()> {
         let resp = self
