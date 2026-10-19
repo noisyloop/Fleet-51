@@ -40,6 +40,9 @@ pub enum Ev {
     PromptQueued {
         id: String,
         text: String,
+        /// The automation that sent this message, if it was not typed by the user.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        automation: Option<String>,
     },
     PromptDelivered {
         id: String,
@@ -90,9 +93,25 @@ pub enum Ev {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Live {
     State(Box<State>),
-    Event { session: String, event: Event },
+    Event {
+        session: String,
+        event: Event,
+    },
     Pull(crate::models::Pull),
     Runtime(crate::runtime::Runtime),
+    /// The full list, sent whenever an automation is added, changed or runs.
+    Automations {
+        automations: Vec<crate::automations::Automation>,
+    },
+    /// An automation run finished (shown in the app; also sent as a system notification).
+    Notice {
+        bot: String,
+        title: String,
+        body: String,
+    },
+    Network {
+        online: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,7 +204,7 @@ impl State {
                     self.status = Status::Idle;
                 }
             }
-            Ev::PromptQueued { id, text } => self.pending.push(Prompt {
+            Ev::PromptQueued { id, text, .. } => self.pending.push(Prompt {
                 id: id.clone(),
                 text: text.clone(),
                 delivered: false,
@@ -255,6 +274,7 @@ mod tests {
             Ev::PromptQueued {
                 id: "a".into(),
                 text: "one".into(),
+                automation: None,
             },
         ));
         s.apply(&ev(
@@ -262,6 +282,7 @@ mod tests {
             Ev::PromptQueued {
                 id: "b".into(),
                 text: "two".into(),
+                automation: None,
             },
         ));
         s.apply(&ev(3, Ev::PromptDelivered { id: "a".into() }));

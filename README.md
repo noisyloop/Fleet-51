@@ -20,6 +20,11 @@ Create a bot, give it a name and a face, pick a free model, and chat. Run as man
   window (⋯ › Open in new window) to have several conversations side by side.
 - **Pick a model per bot:** choose from the menu at the top of the chat, and download more free models
   from **Models**. Bots on different models run at the same time.
+- **Automations:** give a bot a job on a schedule: once, hourly, daily, weekdays, weekly, monthly,
+  annually, or your own days and times. Name it, write the instructions, and get a notification when
+  it's done. The run and its reply land in the bot's chat.
+- **Works offline:** after the first setup, bots and automations run with no internet at all. An
+  **Offline** badge shows when you're disconnected; only downloading new models needs a connection.
 - **See the thinking:** models that reason show it in a collapsible **Reasoning** section. Turn
   **Think** off for faster replies.
 - **Private:** everything runs on your computer through [Ollama](https://ollama.com). No account, no
@@ -66,6 +71,7 @@ scripts/smoke.sh                # end-to-end test against a stand-in Ollama
 | `src/daemon.rs` | Background service: owns the bots, model downloads and the model engine; a newer build takes over from an older one |
 | `src/session.rs`, `src/events.rs` | Each bot is an append-only event log plus a supervisor that runs its agent; replies, reasoning and status are read from the log |
 | `src/agent.rs` | The bot itself: talks to the Ollama model, with file tools confined to the bot's folder |
+| `src/automations.rs` | Schedules, runs and notifications for automations (`~/.fleet51/automations.json`) |
 | `src/runtime.rs`, `src/models.rs` | Finds, downloads (checksum-verified) and starts Ollama; lists and downloads models |
 | `ui/` | The chat app (no build step), shown in the Mac app's window or any browser |
 | `packaging/macos/` | The native Mac app and `.dmg` packaging, built by GitHub Actions |
@@ -73,7 +79,14 @@ scripts/smoke.sh                # end-to-end test against a stand-in Ollama
 Fleet-51 began as a teardown of [Orca](https://github.com/stablyai/orca); the analysis is in
 [`docs/orca-teardown.md`](docs/orca-teardown.md).
 
+## Automations
+
+**Automations › New** (or a bot's **⋯ › New automation…**) opens the editor: a name, the bot that does
+it, a trigger, the instructions, and whether to notify you when it's done. Times are your computer's
+local time. Fleet-51 has to be running for an automation to run (closing the window is fine); a run
+missed while the computer was asleep or off happens when Fleet-51 is next running, if that's within
+12 hours.
+
 ## Coming later
 
-Scheduled jobs (a bot that runs a task every morning, such as a daily summary or code check),
-Windows and Linux packages, and signed builds.
+Undo for bot file changes, email notifications, Windows and Linux packages, and signed builds.

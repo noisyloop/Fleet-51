@@ -1,4 +1,5 @@
 mod agent;
+mod automations;
 mod client;
 mod daemon;
 mod events;

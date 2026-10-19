@@ -107,6 +107,8 @@ const pulls = new Map();
 let runtime = { state: 'checking' };
 let defaultModel = 'qwen3:1.7b';
 let lastSeq = 0;
+let online = true;
+let autos = [];
 let prompts = new Map();
 let typingEl = null;
 
@@ -243,7 +245,7 @@ function render(e) {
   switch (e.type) {
     case 'prompt_queued': {
       const st = el('span', { class: 'st' });
-      add(el('div', { class: 'm-user' }, e.text, st));
+      add(el('div', { class: 'm-user' }, e.automation ? el('span', { class: 'auto-tag' }, '⚡ ' + e.automation) : null, e.text, st));
       prompts.set(e.id, st);
       scrollDown(true);
       break;
@@ -347,14 +349,177 @@ function renderModelsDialog() {
   };
   const custom = el('input', { placeholder: 'Any model from ollama.com/library', 'aria-label': 'Model name' });
   $('#models-body').replaceChildren(
+    online ? null : el('div', { class: 'offline-note', text: "You're offline. Your downloaded models still work; downloading new ones needs the internet." }),
     el('div', { class: 'model-list' }, el('h3', { text: 'On this computer' }),
       installed.length ? installed.map((m) => row(m.name, `${(m.size / 1e9).toFixed(1)} GB${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: 'None yet.' })),
     el('div', { class: 'model-list' }, el('h3', { text: 'Free models to download' }),
       suggested.filter((s) => !have(s.name)).map((s) => {
         const p = pulls.get(s.name);
-        return row(s.name, `${s.size} · ${s.note}`, el('button', { type: 'button', class: 'pill', disabled: p && !p.done, onclick: () => download(s.name) }, p && !p.done ? 'Downloading…' : 'Download'));
+        return row(s.name, `${s.size} · ${s.note}`, el('button', { type: 'button', class: 'pill', disabled: (p && !p.done) || !online, onclick: () => download(s.name) }, p && !p.done ? 'Downloading…' : 'Download'));
       })),
     el('div', { class: 'custom-model' }, custom, el('button', { type: 'button', class: 'pill', onclick: () => download(custom.value) }, 'Download')));
+}
+
+function setOnline(v) {
+  online = v;
+  $('#net').hidden = online;
+  renderModelsDialog();
+}
+
+// ---- automations -------------------------------------------------------------------------
+const TRIGGERS = ['once', 'hourly', 'daily', 'weekdays', 'weekly', 'monthly', 'annually', 'custom'];
+const DAY = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTH = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const two = (n) => String(n).padStart(2, '0');
+const ymd = (d) => `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+function ordinal(n) {
+  if (n % 100 >= 11 && n % 100 <= 13) return n + 'th';
+  return n + ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th');
+}
+const cap = (s) => s[0].toUpperCase() + s.slice(1);
+function listWords(xs) { return xs.length < 2 ? xs.join('') : xs.slice(0, -1).join(', ') + ' and ' + xs[xs.length - 1]; }
+
+// What a schedule means, in words ("Every weekday at 08:30").
+function describe(s) {
+  const t = s.times[0] || '';
+  const [, mm, dd] = (s.date || '2000-01-01').split('-').map(Number);
+  switch (s.repeat) {
+    case 'once': {
+      const d = s.date ? new Date(s.date + 'T00:00') : new Date();
+      return `Only one time on ${MONTH[d.getMonth()].slice(0, 3)} ${d.getDate()}, ${d.getFullYear()} at ${t}`;
+    }
+    case 'hourly': return `Every hour from ${two(s.from_hour ?? 9)}:${t.slice(3) || '00'} to ${two(s.to_hour ?? 17)}:${t.slice(3) || '00'}`;
+    case 'daily': return `Every day at ${t}`;
+    case 'weekdays': return `Every weekday at ${t}`;
+    case 'weekly': return `Every week on ${listWords(s.days.map((d) => DAY[d]))} at ${t}`;
+    case 'monthly': return `On the ${ordinal(dd)} of each month at ${t}`;
+    case 'annually': return `Every ${MONTH[mm - 1]} ${dd} at ${t}`;
+    case 'custom': return s.days.length && s.times.length ? `${s.days.length === 7 ? 'Every day' : listWords(s.days.map((d) => DAY[d].slice(0, 3)))} at ${listWords([...new Set(s.times)].sort())}` : 'Pick days and times';
+  }
+  return '';
+}
+
+let draft = null; // the automation being edited
+// A new time an hour after the last one, so "Add time" never repeats a time.
+function laterTime(t = '08:00') {
+  const [h, m] = t.split(':').map(Number);
+  return `${two((h + 1) % 24)}:${two(m || 0)}`;
+}
+function defaultSchedule(repeat, from) {
+  const soon = new Date(Date.now() + 5 * 60000);
+  soon.setMinutes(Math.ceil(soon.getMinutes() / 5) * 5);
+  const time = (from && from.times[0]) || `${two(soon.getHours())}:${two(soon.getMinutes())}`;
+  const s = { repeat, times: [time], date: null, days: [], from_hour: 9, to_hour: 17 };
+  if (repeat === 'once') s.date = ymd(soon);
+  if (repeat === 'weekly' || repeat === 'custom') s.days = [new Date().getDay()];
+  if (repeat === 'monthly') s.date = '2000-01-01';
+  if (repeat === 'annually') s.date = '2000-01-01';
+  if (repeat === 'custom' && from) s.times = [...from.times];
+  return s;
+}
+
+function openAuto(a, botId) {
+  if (!bots.length) { toast('Create a bot first'); return; }
+  draft = a ? JSON.parse(JSON.stringify(a)) : { id: null, bot: botId || current || bots[0].id, name: '', instructions: '', schedule: defaultSchedule('daily'), notify: true, enabled: true };
+  if (!bots.some((b) => b.id === draft.bot)) draft.bot = bots[0].id;
+  $('#auto-title').textContent = a ? 'Edit Automation' : 'New Automation';
+  $('#auto-save').textContent = a ? 'Save' : 'Create';
+  $('#auto-name').value = draft.name;
+  $('#auto-text').value = draft.instructions;
+  $('#auto-notify').checked = draft.notify;
+  $('#auto-actions').hidden = !a;
+  $('#trig-menu').hidden = true;
+  drawAuto();
+  if ($('#autos-dlg').open) $('#autos-dlg').close();
+  $('#auto-dlg').showModal();
+  $('#auto-name').focus();
+}
+
+function drawAuto() {
+  const s = draft.schedule;
+  $('#auto-bots').replaceChildren(...bots.map((b) => el('button', { type: 'button', role: 'radio', 'aria-checked': String(b.id === draft.bot), title: `${b.name} (${b.model || 'no model'})`, onclick: () => { draft.bot = b.id; drawAuto(); } }, avatar(b.shape, b.color, 40), el('span', { text: b.name }))));
+  $('#trig-name').textContent = cap(s.repeat);
+  $('#trig-desc').textContent = describe(s);
+  const set = (k, v) => { s[k] = v; drawAuto(); };
+  const time = (i = 0) => el('input', { type: 'time', value: s.times[i] || '', 'aria-label': 'Time', onchange: (e) => { s.times[i] = e.target.value; drawAuto(); } });
+  const dayPick = (multi) => el('div', { class: 'days', role: 'group', 'aria-label': 'Days' }, DAY.map((name, d) => el('button', { type: 'button', 'aria-pressed': String(s.days.includes(d)), 'aria-label': name, title: name, onclick: () => {
+    if (multi) set('days', s.days.includes(d) ? s.days.filter((x) => x !== d) : [...s.days, d].sort());
+    else set('days', [d]);
+  } }, name[0])));
+  const [yy, mm, dd] = (s.date || '2000-01-01').split('-');
+  const hourSel = (k, label) => el('label', {}, label, el('select', { onchange: (e) => set(k, Number(e.target.value)) }, Array.from({ length: 24 }, (_, h) => el('option', { value: h, selected: (s[k] ?? (k === 'from_hour' ? 9 : 17)) === h }, `${two(h)}:00`))));
+  const parts = {
+    once: () => [el('label', {}, 'Date', el('input', { type: 'date', value: s.date || '', min: ymd(new Date()), onchange: (e) => set('date', e.target.value) })), el('label', {}, 'Time', time())],
+    hourly: () => [hourSel('from_hour', 'From'), hourSel('to_hour', 'to'), el('label', {}, 'at minute', el('input', { type: 'number', min: 0, max: 59, value: Number((s.times[0] || '00:00').slice(3)), onchange: (e) => set('times', [`00:${two(Math.min(59, Math.max(0, Number(e.target.value) || 0)))}`]) }))],
+    daily: () => [el('label', {}, 'Time', time())],
+    weekdays: () => [el('label', {}, 'Time', time())],
+    weekly: () => [dayPick(true), el('label', {}, 'Time', time())],
+    monthly: () => [el('label', {}, 'Day of the month', el('input', { type: 'number', min: 1, max: 31, value: Number(dd), onchange: (e) => set('date', `2000-01-${two(Math.min(31, Math.max(1, Number(e.target.value) || 1)))}`) })), el('label', {}, 'Time', time())],
+    annually: () => [el('select', { 'aria-label': 'Month', onchange: (e) => set('date', `2000-${two(Number(e.target.value) + 1)}-${dd}`) }, MONTH.map((m, i) => el('option', { value: i, selected: i === Number(mm) - 1 }, m))),
+      el('input', { type: 'number', min: 1, max: 31, value: Number(dd), 'aria-label': 'Day', onchange: (e) => set('date', `${yy}-${mm}-${two(Math.min(31, Math.max(1, Number(e.target.value) || 1)))}`) }), el('label', {}, 'Time', time())],
+    custom: () => [dayPick(true), el('div', { class: 'times' }, s.times.map((t, i) => el('span', { class: 't' }, time(i), s.times.length > 1 ? el('button', { type: 'button', 'aria-label': 'Remove time', onclick: () => set('times', s.times.filter((_, j) => j !== i)) }, '×') : null)),
+      el('button', { type: 'button', class: 'pill small', onclick: () => set('times', [...s.times, laterTime(s.times[s.times.length - 1])]) }, '+ Add time'))],
+  };
+  $('#trig-detail').replaceChildren(...parts[s.repeat]());
+  $('#trig-menu').replaceChildren(el('div', { class: 'group', text: 'General' }), ...TRIGGERS.map((r) => {
+    const preview = r === s.repeat ? s : defaultSchedule(r, s);
+    return el('button', { type: 'button', role: 'option', 'aria-selected': String(r === s.repeat), onclick: () => { draft.schedule = r === s.repeat ? s : defaultSchedule(r, s); $('#trig-menu').hidden = true; drawAuto(); } },
+      clockIcon(), el('span', {}, el('b', { text: r === 'custom' ? 'Custom' : cap(r) }), el('span', { class: 'sub', text: r === 'hourly' && r !== s.repeat ? 'Every hour within chosen hours' : r === 'custom' && r !== s.repeat ? 'Pick days and several times' : describe(preview) })));
+  }));
+  validAuto();
+}
+function clockIcon() {
+  const t = document.createElement('template');
+  t.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  return t.content.firstChild;
+}
+function validAuto() {
+  $('#auto-save').disabled = !$('#auto-name').value.trim() || !$('#auto-text').value.trim();
+}
+async function saveAuto() {
+  draft.name = $('#auto-name').value.trim();
+  draft.instructions = $('#auto-text').value.trim();
+  draft.notify = $('#auto-notify').checked;
+  const body = { bot: draft.bot, name: draft.name, instructions: draft.instructions, schedule: draft.schedule, notify: draft.notify, enabled: draft.id ? draft.enabled : true };
+  try {
+    await api(draft.id ? `/api/automations/${draft.id}` : '/api/automations', body);
+    $('#auto-dlg').close();
+    autos = await api('/api/automations');
+    openAutos();
+  } catch (e) { toast(e.message); }
+}
+function whenText(ms) {
+  const d = new Date(ms);
+  const today = new Date();
+  const tomorrow = new Date(Date.now() + 86400000);
+  const hm = `${two(d.getHours())}:${two(d.getMinutes())}`;
+  if (d.toDateString() === today.toDateString()) return `today at ${hm}`;
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow at ${hm}`;
+  return `${DAY[d.getDay()].slice(0, 3)} ${d.getDate()} ${MONTH[d.getMonth()].slice(0, 3)} at ${hm}`;
+}
+function openAutos() {
+  $('#autos-dlg').open || $('#autos-dlg').showModal();
+  renderAutos();
+}
+function renderAutos() {
+  if (!$('#autos-dlg').open) return;
+  if (!autos.length) {
+    $('#autos-body').replaceChildren(el('div', { class: 'autos-empty' }, el('div', { class: 'bolt' }, clockIcon()), el('div', { text: 'Have a bot do something on a schedule: a morning summary, a daily code check, a weekly report.' }), el('button', { type: 'button', class: 'pill primary', onclick: () => openAuto(null) }, 'New automation')));
+    return;
+  }
+  $('#autos-body').replaceChildren(...autos.map((a) => {
+    const b = bots.find((x) => x.id === a.bot);
+    const toggle = el('input', { type: 'checkbox', class: 'switch', 'aria-label': `${a.name} on`, checked: a.enabled, onclick: (e) => e.stopPropagation(), onchange: async (e) => {
+      try { await api(`/api/automations/${a.id}`, { ...a, enabled: e.target.checked }); } catch (err) { toast(err.message); e.target.checked = !e.target.checked; }
+    } });
+    const last = a.last_status === 'running' ? 'Running now…' : a.last_status ? `Last run ${a.last_status === 'done' ? 'done' : 'failed'}${a.last_result ? ': ' + a.last_result : ''}` : '';
+    return el('div', { class: 'arow', role: 'button', tabindex: 0, onclick: () => openAuto(a), onkeydown: (e) => { if (e.key === 'Enter') openAuto(a); } },
+      el('span', { class: 'avatar' }, b ? avatar(b.shape, b.color, 40) : null),
+      el('b', { text: a.name }),
+      toggle,
+      el('span', { class: 'sub', text: `${b ? b.name + ' · ' : ''}${describe(a.schedule)}${a.enabled && a.next_run ? ' · next ' + whenText(a.next_run) : a.enabled ? '' : ' · off'}` }),
+      last ? el('span', { class: 'last' + (a.last_status === 'failed' ? ' failed' : ''), text: last }) : null);
+  }));
 }
 
 // ---- first-run setup -------------------------------------------------------------------
@@ -406,6 +571,8 @@ async function boot() {
     const r = await api('/api/runtime');
     runtime = r.runtime;
     defaultModel = r.default_model;
+    setOnline(r.online !== false);
+    autos = await api('/api/automations');
     await loadModels();
     await refresh();
   } catch { return; }
@@ -421,7 +588,10 @@ async function boot() {
       renderSetup(); renderModelSelect(); renderModelsDialog();
       return;
     }
-    if (msg.kind === 'state') onState(msg);
+    if (msg.kind === 'state') { onState(msg); return; }
+    if (msg.kind === 'automations') { autos = msg.automations; renderAutos(); return; }
+    if (msg.kind === 'notice') { toast(`${msg.title}: ${msg.body.slice(0, 120)}`); return; }
+    if (msg.kind === 'network') setOnline(msg.online);
   };
   es.onopen = () => { refresh().catch(() => {}); if (current) api(`/api/bots/${current}/messages?since=${lastSeq}`).then((evs) => evs.forEach(render)).catch(() => {}); };
 }
@@ -437,6 +607,19 @@ $('#nb-create').addEventListener('click', createBot);
 $('#btn-search').onclick = () => { const w = $('#search-wrap'); w.hidden = !w.hidden; if (!w.hidden) $('#search').focus(); else { $('#search').value = ''; renderBots(); } };
 $('#search').oninput = renderBots;
 $('#btn-models').onclick = () => { $('#models-dlg').showModal(); loadModels().then(renderModelsDialog); renderModelsDialog(); };
+$('#btn-autos').onclick = openAutos;
+$('#autos-new').onclick = () => openAuto(null);
+$('#menu-auto').onclick = () => { const b = bot(); if (b) openAuto(null, b.id); };
+$('#auto-name').oninput = validAuto;
+$('#auto-text').oninput = validAuto;
+$('#auto-save').onclick = saveAuto;
+$('#auto-trigger').onclick = () => { $('#trig-menu').hidden = !$('#trig-menu').hidden; };
+$('#auto-dlg').addEventListener('click', (e) => { if (!e.target.closest('.trigger-wrap')) $('#trig-menu').hidden = true; });
+$('#auto-run').onclick = async () => { try { await api(`/api/automations/${draft.id}/run`, {}); $('#auto-dlg').close(); toast(`${draft.name} is running`); select(draft.bot); } catch (e) { toast(e.message); } };
+$('#auto-delete').onclick = async () => {
+  if (!confirm(`Delete the automation "${draft.name}"?`)) return;
+  try { await api(`/api/automations/${draft.id}/delete`, {}); $('#auto-dlg').close(); autos = await api('/api/automations'); openAutos(); } catch (e) { toast(e.message); }
+};
 $('#btn-back').onclick = () => document.getElementById('app').classList.remove('in-chat');
 $('#btn-menu').onclick = () => { $('#menu').hidden = !$('#menu').hidden; };
 document.addEventListener('click', (e) => { if (!e.target.closest('#btn-menu') && (!e.target.closest('#menu') || e.target.closest('#menu button'))) $('#menu').hidden = true; });

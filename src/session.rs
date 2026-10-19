@@ -132,12 +132,13 @@ impl Session {
 
     /// Queue a message. Holding the command lock while appending means a concurrent (re)start
     /// either sees it in `pending` or receives it on the channel, never both.
-    pub fn queue_prompt(&self, text: &str) -> (String, bool) {
+    pub fn queue_prompt(&self, text: &str, automation: Option<&str>) -> (String, bool) {
         let guard = self.cmd.lock().unwrap();
         let id = short_id("p");
         self.emit(Ev::PromptQueued {
             id: id.clone(),
             text: text.to_string(),
+            automation: automation.map(str::to_string),
         });
         let live = guard.as_ref().is_some_and(|tx| {
             tx.send(Cmd::Prompt {
@@ -182,7 +183,7 @@ fn requeue_interrupted(s: &Session) {
             level: "info".into(),
             message: "the last reply was interrupted; asking again".into(),
         });
-        s.queue_prompt(&text);
+        s.queue_prompt(&text, None);
     }
 }
 

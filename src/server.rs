@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
+use crate::automations::Draft;
 use crate::daemon::{Daemon, BOT_COLORS, BOT_SHAPES};
 use crate::session::Session;
 
@@ -70,6 +71,10 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/bots/{id}/think", post(bot_think))
         .route("/api/bots/{id}/delete", post(bot_delete))
         .route("/api/bots/{id}/reveal", post(bot_reveal))
+        .route("/api/automations", get(automations).post(create_automation))
+        .route("/api/automations/{id}", post(edit_automation))
+        .route("/api/automations/{id}/run", post(run_automation))
+        .route("/api/automations/{id}/delete", post(delete_automation))
         .route("/api/stream", get(stream))
         .route("/api/shutdown", post(shutdown))
         .layer(middleware::from_fn_with_state(d.clone(), auth));
@@ -121,7 +126,7 @@ async fn health(State(d): D) -> Json<Value> {
 async fn runtime(State(d): D) -> Json<Value> {
     let r = d.runtime.lock().unwrap().clone();
     Json(
-        json!({"runtime": r, "default_model": crate::runtime::DEFAULT_MODEL, "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
+        json!({"runtime": r, "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "default_model": crate::runtime::DEFAULT_MODEL, "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
     )
 }
 
@@ -184,7 +189,7 @@ async fn send(State(d): D, Path(id): Path<String>, Json(t): Json<Text>) -> R<Val
     if t.text.trim().is_empty() {
         return Err(anyhow::anyhow!("empty message").into());
     }
-    Ok(Json(json!({"id": d.prompt(&s, &t.text)})))
+    Ok(Json(json!({"id": d.prompt(&s, &t.text, None)})))
 }
 
 #[derive(Deserialize)]
@@ -260,6 +265,33 @@ async fn delete_model(Json(m): Json<ModelName>) -> R<Value> {
     let name = m.name.clone();
     tokio::task::spawn_blocking(move || crate::models::delete(&name)).await??;
     Ok(Json(json!({"deleted": m.name})))
+}
+
+async fn automations(State(d): D) -> Json<Value> {
+    Json(json!(d.automations.list()))
+}
+
+async fn create_automation(State(d): D, Json(a): Json<Draft>) -> R<Value> {
+    let d2 = d.clone();
+    let a = tokio::task::spawn_blocking(move || crate::automations::create(&d2, a)).await??;
+    Ok(Json(json!(a)))
+}
+
+async fn edit_automation(State(d): D, Path(id): Path<String>, Json(a): Json<Draft>) -> R<Value> {
+    let d2 = d.clone();
+    let a = tokio::task::spawn_blocking(move || crate::automations::edit(&d2, &id, a)).await??;
+    Ok(Json(json!(a)))
+}
+
+async fn run_automation(State(d): D, Path(id): Path<String>) -> R<Value> {
+    let d2 = d.clone();
+    tokio::task::spawn_blocking(move || crate::automations::run(&d2, &id)).await??;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn delete_automation(State(d): D, Path(id): Path<String>) -> R<Value> {
+    crate::automations::delete(&d, &id)?;
+    Ok(Json(json!({"ok": true})))
 }
 
 async fn stream(State(d): D) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {

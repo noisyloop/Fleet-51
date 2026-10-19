@@ -26,7 +26,11 @@
       </div>
       <nav class="bots" id="bots"></nav>
       <div class="side-bottom">
+        <button class="pill" id="btn-autos">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6L13 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          Automations</button>
         <button class="pill" id="btn-models">Models</button>
+        <span class="net" id="net" role="status" title="No internet connection. Your bots and automations keep working on this computer; only downloading models needs the internet." hidden>Offline</span>
       </div>
     </aside>
 
@@ -46,6 +50,7 @@
           <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>
         </button>
         <div class="menu" id="menu" hidden>
+          <button id="menu-auto">New automation…</button>
           <button id="menu-window">Open in new window</button>
           <button id="menu-folder">Show files</button>
           <button id="menu-delete" class="danger">Delete bot</button>
@@ -85,6 +90,55 @@
     <form method="dialog">
       <div class="dlg-head"><h2 id="models-title">Models</h2><button class="round" value="cancel" aria-label="Close">✕</button></div>
       <div class="dlg-body" id="models-body"></div>
+    </form>
+  </dialog>
+
+  <dialog id="autos-dlg" aria-labelledby="autos-title">
+    <form method="dialog">
+      <div class="dlg-head"><h2 id="autos-title">Automations</h2><span class="spacer"></span><button type="button" class="pill small light" id="autos-new">New</button><button class="round" value="cancel" aria-label="Close">✕</button></div>
+      <div class="dlg-body autos-body" id="autos-body"></div>
+    </form>
+  </dialog>
+
+  <dialog id="auto-dlg" class="auto-dlg" aria-labelledby="auto-title">
+    <form method="dialog" id="auto-form">
+      <div class="auto-head">
+        <button class="round" value="cancel" aria-label="Close">✕</button>
+        <h2 id="auto-title">New Automation</h2>
+        <button type="button" class="pill" id="auto-save" disabled>Create</button>
+      </div>
+      <div class="auto-body">
+        <div class="bolt" aria-hidden="true"><svg viewBox="0 0 24 24" width="44" height="44"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6L13 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></div>
+        <input id="auto-name" class="field" placeholder="Automation Name" maxlength="80" autocomplete="off" aria-label="Automation name">
+
+        <h3>Bot</h3>
+        <div class="auto-bots" id="auto-bots" role="radiogroup" aria-label="Bot that runs it"></div>
+
+        <h3>Trigger</h3>
+        <div class="trigger-wrap">
+          <button type="button" class="field trigger" id="auto-trigger" aria-haspopup="listbox">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <span><b id="trig-name">Daily</b><span class="sub" id="trig-desc"></span></span>
+          </button>
+          <div class="trig-menu" id="trig-menu" role="listbox" hidden></div>
+        </div>
+        <div class="trig-detail" id="trig-detail"></div>
+
+        <h3>Instructions</h3>
+        <textarea id="auto-text" class="field" rows="5" placeholder="Tell the bot what to do, for example: Summarise the notes in your folder and list three things to do today." aria-label="Instructions"></textarea>
+
+        <h3>Notifications</h3>
+        <label class="field switch-row">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15L6 16zM10 20.5a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          <span>Notify me when it's done</span>
+          <input type="checkbox" class="switch" id="auto-notify" checked>
+        </label>
+
+        <div class="auto-actions" id="auto-actions" hidden>
+          <button type="button" class="pill" id="auto-run">Run now</button>
+          <button type="button" class="pill danger-text" id="auto-delete">Delete automation</button>
+        </div>
+      </div>
     </form>
   </dialog>
 

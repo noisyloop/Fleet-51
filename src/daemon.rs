@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -72,6 +73,9 @@ pub struct Daemon {
     pub pulls: Mutex<HashMap<String, Pull>>,
     pub runtime: Mutex<Runtime>,
     pub ollama: Mutex<Option<std::process::Child>>,
+    pub automations: crate::automations::Automations,
+    /// Whether the internet is reachable. Bots work either way; only downloads need it.
+    pub online: AtomicBool,
 }
 
 impl Daemon {
@@ -172,8 +176,13 @@ impl Daemon {
     }
 
     /// Send a message; a bot that is not running is started again to answer it.
-    pub fn prompt(self: &Arc<Self>, s: &Arc<Session>, text: &str) -> String {
-        let (id, live) = s.queue_prompt(text);
+    pub fn prompt(
+        self: &Arc<Self>,
+        s: &Arc<Session>,
+        text: &str,
+        automation: Option<&str>,
+    ) -> String {
+        let (id, live) = s.queue_prompt(text, automation);
         if !live && !s.is_running() {
             session::start(self.clone(), s.clone(), s.state().provider_session);
         }
@@ -197,6 +206,7 @@ impl Daemon {
     }
 
     pub fn delete_bot(&self, s: &Arc<Session>) {
+        crate::automations::delete_for_bot(self, &s.id);
         s.emit(Ev::Archived);
         s.emit(Ev::StopRequested);
         s.send(Cmd::Stop);
@@ -312,6 +322,38 @@ impl Daemon {
     }
 }
 
+/// Check now and then whether the internet is reachable, for the app's Offline badge.
+fn watch_network(d: Arc<Daemon>) {
+    tokio::spawn(async move {
+        loop {
+            let online = tokio::task::spawn_blocking(internet_reachable)
+                .await
+                .unwrap_or(false);
+            if d.online.swap(online, Ordering::SeqCst) != online {
+                let _ = d.global.send(Live::Network { online });
+            }
+            tokio::time::sleep(Duration::from_secs(if online { 60 } else { 15 })).await;
+        }
+    });
+}
+
+fn internet_reachable() -> bool {
+    if let Ok(v) = std::env::var("FLEET51_ONLINE") {
+        return v != "0";
+    }
+    use std::net::{TcpStream, ToSocketAddrs};
+    ["registry.ollama.ai:443", "github.com:443"]
+        .iter()
+        .any(|host| {
+            host.to_socket_addrs()
+                .ok()
+                .and_then(|mut a| a.next())
+                .is_some_and(|addr| {
+                    TcpStream::connect_timeout(&addr, Duration::from_secs(4)).is_ok()
+                })
+        })
+}
+
 async fn hand_off(home: &Home, token: &str) -> u64 {
     let Some(prev) = read_info(home) else {
         return 1;
@@ -379,6 +421,8 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
         pulls: Mutex::new(HashMap::new()),
         runtime: Mutex::new(Runtime::Checking),
         ollama: Mutex::new(None),
+        automations: crate::automations::Automations::load(&home),
+        online: AtomicBool::new(true),
     });
 
     // Recover bots from their logs; anything that is not a bot (older developer sessions) is ignored.
@@ -425,6 +469,8 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
     println!("Fleet-51 daemon generation {generation} listening on {url}");
     println!("Open: {url}/?token={token}");
     d.clone().start_runtime();
+    crate::automations::start(d.clone());
+    watch_network(d.clone());
     let app = crate::server::router(d.clone());
     let d2 = d.clone();
     axum::serve(listener, app)
