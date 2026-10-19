@@ -94,6 +94,18 @@ final class ChatWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDe
         a.addButton(withTitle: "Cancel")
         a.beginSheetModal(for: window) { r in completionHandler(r == .alertFirstButtonReturn) }
     }
+
+    // The + button opens a file picker; WKWebView shows none unless the app does.
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = "Add"
+        panel.message = "Choose files to add to this bot's folder (they're copied; your originals stay as they are)"
+        panel.beginSheetModal(for: window) { r in completionHandler(r == .OK ? panel.urls : nil) }
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
