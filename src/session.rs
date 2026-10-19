@@ -110,7 +110,9 @@ impl Session {
         self.running.load(Ordering::SeqCst)
     }
 
+    /// Events after `since`, leaving out anything before the chat was last cleared.
     pub fn history(&self, since: u64) -> Vec<Event> {
+        let since = since.max(self.state().cleared_seq);
         let Ok(f) = File::open(self.dir.join("events.jsonl")) else {
             return vec![];
         };
@@ -335,6 +337,20 @@ fn handle_line(s: &Session, line: &str, inflight: &mut VecDeque<String>) {
                     s.emit(Ev::ProviderSession { id: id.to_string() });
                 }
             }
+        }
+        Some("system") if v["subtype"] == "checkpoint" => {
+            if let Some(id) = v["id"].as_str() {
+                s.emit(Ev::Checkpoint { id: id.to_string() });
+            }
+        }
+        Some("system") if v["subtype"] == "checkpoint_failed" => {
+            s.emit(Ev::Note {
+                level: "warn".into(),
+                message: v["message"]
+                    .as_str()
+                    .unwrap_or("Undo is not available")
+                    .into(),
+            });
         }
         Some("user") if v["isReplay"] == true => {
             if let Some(id) = inflight.pop_front() {

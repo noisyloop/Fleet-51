@@ -24,6 +24,8 @@ impl Home {
         for d in ["sessions", "runtime"] {
             std::fs::create_dir_all(self.root.join(d))?;
         }
+        // Chats, automations and undo copies are readable only by you.
+        private_dir(&self.root);
         Ok(())
     }
 
@@ -48,6 +50,17 @@ impl Home {
         write_private(&path, &t)?;
         Ok(t)
     }
+}
+
+/// Make a folder readable and writable only by its owner (no-op where that does not apply).
+pub fn private_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 pub fn write_private(path: &Path, contents: &str) -> anyhow::Result<()> {

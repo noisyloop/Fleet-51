@@ -224,3 +224,24 @@ textarea.field { resize: vertical; min-height: 110px; }
 .auto-actions { display: flex; gap: 10px; justify-content: space-between; margin-top: 14px; }
 .danger-text { color: var(--danger); }
 @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .auto-dlg { background: var(--panel); } :root:not([data-theme="dark"]) .trig-menu { background: rgba(250,250,252,.97); } }
+
+/* Right-click menu on a bot */
+.menu.ctx { position: fixed; right: auto; top: 0; left: 0; z-index: 50; }
+
+/* Undo after a reply that changed files */
+.m-undo { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.m-undo button { border: 1px solid var(--border); background: var(--raised); border-radius: 999px; padding: 3px 12px; font-size: 13px; }
+.m-undo button:disabled { opacity: .5; cursor: default; }
+
+/* Automation run history */
+.hist-head { display: flex; align-items: center; justify-content: space-between; }
+.auto-history { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
+.hrow { background: var(--raised); border-radius: 14px; padding: 8px 12px; display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: start; }
+.hrow .when { font-size: 13px; color: var(--muted); }
+.hrow .when b { color: var(--ok); font-weight: 600; }
+.hrow .when b.failed { color: var(--danger); }
+.hrow details { grid-column: 1 / -1; font-size: 14px; }
+.hrow summary { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hrow .full { white-space: pre-wrap; margin-top: 6px; }
+.hrow > button { border: 0; background: none; color: var(--muted); font-size: 16px; padding: 0 4px; }
+.hrow > button:hover { color: var(--danger); }

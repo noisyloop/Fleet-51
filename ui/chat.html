@@ -53,6 +53,7 @@
           <button id="menu-auto">New automation…</button>
           <button id="menu-window">Open in new window</button>
           <button id="menu-folder">Show files</button>
+          <button id="menu-clear">Clear chat</button>
           <button id="menu-delete" class="danger">Delete bot</button>
         </div>
       </header>
@@ -92,6 +93,14 @@
       <div class="dlg-body" id="models-body"></div>
     </form>
   </dialog>
+
+  <div class="menu ctx" id="ctx" role="menu" hidden>
+    <button id="ctx-window" role="menuitem">Open in new window</button>
+    <button id="ctx-auto" role="menuitem">New automation…</button>
+    <button id="ctx-folder" role="menuitem">Show files</button>
+    <button id="ctx-clear" role="menuitem">Clear chat</button>
+    <button id="ctx-delete" role="menuitem" class="danger">Delete bot</button>
+  </div>
 
   <dialog id="autos-dlg" aria-labelledby="autos-title">
     <form method="dialog">
@@ -133,6 +142,11 @@
           <span>Notify me when it's done</span>
           <input type="checkbox" class="switch" id="auto-notify" checked>
         </label>
+
+        <div id="auto-history-wrap" hidden>
+          <h3 class="hist-head">History <button type="button" class="pill small" id="auto-clear-history">Clear history</button></h3>
+          <div class="auto-history" id="auto-history"></div>
+        </div>
 
         <div class="auto-actions" id="auto-actions" hidden>
           <button type="button" class="pill" id="auto-run">Run now</button>

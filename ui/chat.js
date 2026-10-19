@@ -122,7 +122,7 @@ function toast(msg) {
 function renderBots() {
   const q = $('#search').value.toLowerCase();
   const list = bots.filter((b) => !q || b.name.toLowerCase().includes(q)).sort((a, b) => b.updated - a.updated);
-  $('#bots').replaceChildren(...list.map((b) => el('button', { class: 'bot' + (b.id === current ? ' active' : ''), onclick: () => select(b.id), 'aria-current': b.id === current ? 'true' : null },
+  $('#bots').replaceChildren(...list.map((b) => el('button', { class: 'bot' + (b.id === current ? ' active' : ''), onclick: () => select(b.id), oncontextmenu: (e) => openCtx(e, b), 'aria-current': b.id === current ? 'true' : null },
     el('span', { class: 'avatar' }, avatar(b.shape, b.color, 48), b.status === 'working' || b.pending ? el('span', { class: 'busy', title: 'Working' }) : null),
     el('span', { class: 'name', text: b.name }),
     el('span', { class: 'preview', text: preview(b) }))));
@@ -131,6 +131,30 @@ function renderBots() {
 function preview(b) {
   if (b.status === 'working') return 'Thinking…';
   return (b.preview || 'Say hello').replace(/\s+/g, ' ');
+}
+
+// Right-click (or long-press) on a bot.
+let ctxBot = null;
+function openCtx(e, b) {
+  e.preventDefault();
+  ctxBot = b;
+  const m = $('#ctx');
+  m.hidden = false;
+  const x = Math.min(e.clientX, innerWidth - m.offsetWidth - 8);
+  const y = Math.min(e.clientY, innerHeight - m.offsetHeight - 8);
+  m.style.left = `${Math.max(8, x)}px`;
+  m.style.top = `${Math.max(8, y)}px`;
+  m.querySelector('button').focus();
+}
+async function clearChat(b) {
+  if (!b || !confirm(`Clear your chat with ${b.name}? The messages are removed and ${b.name} starts fresh. Files and automations stay.`)) return;
+  try { await api(`/api/bots/${b.id}/clear`, {}); } catch (e) { toast(e.message); }
+}
+async function deleteBot(b) {
+  if (!b || !confirm(`Delete ${b.name}? Its chat and automations are removed. Its files stay in ${b.folder}.`)) return;
+  await api(`/api/bots/${b.id}/delete`, {}).catch((e) => toast(e.message));
+  if (current === b.id) { current = null; $('#msgs').replaceChildren(); }
+  await refresh();
 }
 
 // ---- conversation --------------------------------------------------------------
@@ -252,8 +276,21 @@ function render(e) {
     }
     case 'reasoning': add(el('details', { class: 'm-reason' }, el('summary', { text: 'Reasoning' }), el('div', { class: 'm-reason-body', text: e.text }))); break;
     case 'text': add(el('div', { class: 'm-bot' }, markdown(e.text))); break;
+    case 'checkpoint': {
+      const btn = el('button', { type: 'button', 'data-checkpoint': e.id, onclick: () => undo(e.id, btn) }, 'Undo');
+      add(el('div', { class: 'm-undo' }, el('span', { text: 'Files changed in this reply' }), btn));
+      break;
+    }
+    case 'undone': {
+      const b = document.querySelector(`[data-checkpoint="${CSS.escape(e.id)}"]`);
+      if (b) { b.disabled = true; b.textContent = 'Undone'; }
+      add(el('div', { class: 'm-sys', text: 'Files put back to how they were before that reply' }));
+      break;
+    }
+    case 'cleared': $('#msgs').replaceChildren(); typingEl = null; { const b = bot(); if (b) hello(b); } break;
     case 'tool_call': {
       const a = e.input || {};
+      if (e.name === 'run_command') { add(el('div', { class: 'm-tool' }, 'Ran ', el('code', { text: String(a.command || '').slice(0, 120) }))); break; }
       const what = a.path || a.file_path || a.command || a.pattern || '';
       add(el('div', { class: 'm-tool', text: `Used ${e.name.replace(/_/g, ' ')}${what ? ' · ' + String(what).slice(0, 80) : ''}` }));
       break;
@@ -263,6 +300,12 @@ function render(e) {
     case 'model_changed': add(el('div', { class: 'm-sys', text: `Switched to ${e.model}` })); break;
     case 'think_changed': add(el('div', { class: 'm-sys', text: e.think ? 'Thinking on: replies show their reasoning' : 'Thinking off: faster replies' })); break;
   }
+}
+async function undo(id, btn) {
+  const b = bot();
+  if (!b || !confirm(`Put ${b.name}'s folder back to how it was before this reply? Changes from later replies are undone too.`)) return;
+  btn.disabled = true;
+  try { await api(`/api/bots/${b.id}/undo`, { checkpoint: id }); } catch (e) { btn.disabled = false; toast(e.message); }
 }
 function friendlyError(msg) {
   if (/not found|pull/i.test(msg)) return `This model isn't downloaded yet. Pick another from the menu above, or download it in Models. (${msg})`;
@@ -428,6 +471,7 @@ function openAuto(a, botId) {
   $('#auto-text').value = draft.instructions;
   $('#auto-notify').checked = draft.notify;
   $('#auto-actions').hidden = !a;
+  drawHistory();
   $('#trig-menu').hidden = true;
   drawAuto();
   if ($('#autos-dlg').open) $('#autos-dlg').close();
@@ -472,6 +516,20 @@ function clockIcon() {
   const t = document.createElement('template');
   t.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
   return t.content.firstChild;
+}
+function drawHistory() {
+  const a = draft && draft.id && autos.find((x) => x.id === draft.id);
+  const runs = (a && a.history) || [];
+  $('#auto-history-wrap').hidden = !a;
+  if (!a) return;
+  $('#auto-clear-history').hidden = !runs.length;
+  $('#auto-history').replaceChildren(...(runs.length ? runs.map((r) => el('div', { class: 'hrow' },
+    el('span', { class: 'when' }, el('b', { class: r.ok ? '' : 'failed', text: r.ok ? 'Done' : 'Failed' }), ' · ' + whenText(r.at)),
+    el('button', { type: 'button', 'aria-label': 'Delete this run', title: 'Delete this run', onclick: () => deleteRuns(a.id, r.id) }, '×'),
+    el('details', {}, el('summary', { text: r.result.replace(/\s+/g, ' ').slice(0, 140) || '(no reply)' }), el('div', { class: 'full' }, markdown(r.result))))) : [el('div', { class: 'muted', text: 'No runs yet.' })]));
+}
+async function deleteRuns(id, run) {
+  try { await api(`/api/automations/${id}/history/delete`, run ? { run } : {}); } catch (e) { toast(e.message); }
 }
 function validAuto() {
   $('#auto-save').disabled = !$('#auto-name').value.trim() || !$('#auto-text').value.trim();
@@ -589,7 +647,7 @@ async function boot() {
       return;
     }
     if (msg.kind === 'state') { onState(msg); return; }
-    if (msg.kind === 'automations') { autos = msg.automations; renderAutos(); return; }
+    if (msg.kind === 'automations') { autos = msg.automations; renderAutos(); if ($('#auto-dlg').open) drawHistory(); return; }
     if (msg.kind === 'notice') { toast(`${msg.title}: ${msg.body.slice(0, 120)}`); return; }
     if (msg.kind === 'network') setOnline(msg.online);
   };
@@ -616,6 +674,7 @@ $('#auto-save').onclick = saveAuto;
 $('#auto-trigger').onclick = () => { $('#trig-menu').hidden = !$('#trig-menu').hidden; };
 $('#auto-dlg').addEventListener('click', (e) => { if (!e.target.closest('.trigger-wrap')) $('#trig-menu').hidden = true; });
 $('#auto-run').onclick = async () => { try { await api(`/api/automations/${draft.id}/run`, {}); $('#auto-dlg').close(); toast(`${draft.name} is running`); select(draft.bot); } catch (e) { toast(e.message); } };
+$('#auto-clear-history').onclick = () => { if (draft && draft.id && confirm('Delete every past run of this automation?')) deleteRuns(draft.id); };
 $('#auto-delete').onclick = async () => {
   if (!confirm(`Delete the automation "${draft.name}"?`)) return;
   try { await api(`/api/automations/${draft.id}/delete`, {}); $('#auto-dlg').close(); autos = await api('/api/automations'); openAutos(); } catch (e) { toast(e.message); }
@@ -630,14 +689,16 @@ $('#btn-think').onclick = async () => {
 };
 $('#menu-window').onclick = () => { const b = bot(); if (b) window.open(`/?bot=${encodeURIComponent(b.id)}`, '_blank'); };
 $('#menu-folder').onclick = () => { const b = bot(); if (b) api(`/api/bots/${b.id}/reveal`, {}).catch((e) => toast(e.message)); };
-$('#menu-delete').onclick = async () => {
-  const b = bot();
-  if (!b || !confirm(`Delete ${b.name}? Its files stay in ${b.folder}.`)) return;
-  await api(`/api/bots/${b.id}/delete`, {}).catch((e) => toast(e.message));
-  current = null;
-  $('#msgs').replaceChildren();
-  await refresh();
-};
+$('#menu-delete').onclick = () => deleteBot(bot());
+$('#menu-clear').onclick = () => clearChat(bot());
+$('#ctx-window').onclick = () => { if (ctxBot) window.open(`/?bot=${encodeURIComponent(ctxBot.id)}`, '_blank'); };
+$('#ctx-auto').onclick = () => { if (ctxBot) openAuto(null, ctxBot.id); };
+$('#ctx-folder').onclick = () => { if (ctxBot) api(`/api/bots/${ctxBot.id}/reveal`, {}).catch((e) => toast(e.message)); };
+$('#ctx-clear').onclick = () => clearChat(ctxBot);
+$('#ctx-delete').onclick = () => deleteBot(ctxBot);
+document.addEventListener('click', (e) => { if (!e.target.closest('#ctx') || e.target.closest('#ctx button')) $('#ctx').hidden = true; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#ctx').hidden = true; });
+window.addEventListener('blur', () => { $('#ctx').hidden = true; });
 $('#model-select').onchange = async (e) => {
   const b = bot();
   const v = e.target.value;

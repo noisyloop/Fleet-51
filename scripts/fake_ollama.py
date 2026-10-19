@@ -2,7 +2,8 @@
 
 Replies echo the model name and include reasoning unless thinking is turned off. Messages
 containing "save a note" make the model write notes.md; "escape" makes it try to write
-outside its folder.
+outside its folder; "break it" overwrites notes.md; "run code" runs a command that also tries to
+write outside the folder.
 """
 import json
 import sys
@@ -56,6 +57,11 @@ class H(BaseHTTPRequestHandler):
                 msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"path": "notes.md", "content": "hi"})}}]}
             elif last["role"] == "user" and "escape" in last["content"]:
                 msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"path": "../escaped.txt", "content": "pwned"})}}]}
+            elif last["role"] == "user" and "break it" in last["content"]:
+                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"path": "notes.md", "content": "broken"})}}]}
+            elif last["role"] == "user" and "run code" in last["content"]:
+                cmd = "echo ran-in-sandbox > out.txt && cat out.txt && echo nope > ../sandbox-escape.txt"
+                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "run_command", "arguments": json.dumps({"command": cmd})}}]}
             elif last["role"] == "tool":
                 msg = {"role": "assistant", "content": f"Tool said: {last['content']}"}
             if b.get("reasoning_effort") != "none":

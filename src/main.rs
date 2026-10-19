@@ -1,11 +1,13 @@
 mod agent;
 mod automations;
+mod checkpoints;
 mod client;
 mod daemon;
 mod events;
 mod home;
 mod models;
 mod runtime;
+mod sandbox;
 mod server;
 mod session;
 

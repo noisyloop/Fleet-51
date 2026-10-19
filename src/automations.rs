@@ -63,6 +63,47 @@ pub struct Automation {
     /// "running", "done" or "failed".
     pub last_status: Option<String>,
     pub last_result: Option<String>,
+    /// Finished runs, newest first.
+    #[serde(default)]
+    pub history: Vec<RunRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RunRecord {
+    pub id: String,
+    pub at: u64,
+    pub ok: bool,
+    pub result: String,
+}
+
+const KEEP_RUNS: usize = 50;
+
+fn record(a: &mut Automation, ok: bool, result: &str) {
+    a.history.insert(
+        0,
+        RunRecord {
+            id: short_id("r"),
+            at: a.last_run.unwrap_or_else(now_ms),
+            ok,
+            result: result.chars().take(4000).collect(),
+        },
+    );
+    a.history.truncate(KEEP_RUNS);
+}
+
+/// Delete one run from an automation's history, or all of it.
+pub fn delete_runs(d: &Daemon, id: &str, run: Option<&str>) -> Result<()> {
+    update(d, |list| {
+        let a = list
+            .iter_mut()
+            .find(|a| a.id == id)
+            .with_context(|| format!("no automation {id}"))?;
+        match run {
+            Some(r) => a.history.retain(|x| x.id != r),
+            None => a.history.clear(),
+        }
+        Ok(())
+    })
 }
 
 /// What the app sends to create or change an automation.
@@ -311,6 +352,7 @@ pub fn create(d: &Daemon, draft: Draft) -> Result<Automation> {
         last_run: None,
         last_status: None,
         last_result: None,
+        history: vec![],
     };
     update(d, |list| {
         list.push(a.clone());
@@ -412,6 +454,7 @@ fn tick(d: &Arc<Daemon>) {
                 if let Err(e) = &result {
                     x.last_status = Some("failed".into());
                     x.last_result = Some(e.to_string());
+                    record(x, false, &e.to_string());
                 }
             }
             Ok(())
@@ -461,6 +504,7 @@ fn watch(d: &Arc<Daemon>, live: Live) {
                 if let Some(a) = list.iter_mut().find(|a| a.id == r.automation) {
                     a.last_status = Some(if ok { "done" } else { "failed" }.into());
                     a.last_result = Some(short.clone());
+                    record(a, ok, &result);
                     if a.notify {
                         notify = Some(a.clone());
                     }

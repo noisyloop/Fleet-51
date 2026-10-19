@@ -158,6 +158,9 @@ impl Daemon {
             n += 1;
         }
         std::fs::create_dir_all(&folder)?;
+        // Only you (and the bot, inside it) can read a bot's files.
+        crate::home::private_dir(&base);
+        crate::home::private_dir(&folder);
         let id = short_id("s");
         let s = Session::open(self.home.sessions().join(&id), &id, self.global.clone())?;
         s.emit(Ev::Created {
@@ -202,6 +205,32 @@ impl Daemon {
 
     pub fn set_think(&self, s: &Arc<Session>, think: bool) {
         s.emit(Ev::ThinkChanged { think });
+        s.send(Cmd::Restart);
+    }
+
+    /// Put the bot's folder back as it was at a checkpoint (before one of its replies).
+    pub fn undo(&self, s: &Arc<Session>, id: &str) -> Result<()> {
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+            bail!("not an undo point: {id}");
+        }
+        let st = s.state();
+        if st.status == crate::events::Status::Working || !st.pending.is_empty() {
+            bail!("wait for {} to finish replying, then undo", st.title);
+        }
+        let folder = PathBuf::from(&st.cwd).canonicalize()?;
+        let root = bots_root().canonicalize()?;
+        // Restoring empties the folder first, so be certain it is a bot's own folder.
+        if !folder.starts_with(&root) || folder == root {
+            bail!("{} is not a bot folder", folder.display());
+        }
+        crate::checkpoints::restore(&folder, &s.dir.join("agent").join("checkpoints").join(id))?;
+        s.emit(Ev::Undone { id: id.into() });
+        Ok(())
+    }
+
+    /// Start the conversation over; files stay as they are.
+    pub fn clear_chat(&self, s: &Arc<Session>) {
+        s.emit(Ev::Cleared);
         s.send(Cmd::Restart);
     }
 

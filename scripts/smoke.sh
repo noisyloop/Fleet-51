@@ -71,6 +71,35 @@ api "/api/bots/$SCOUT/messages" '{"text":"escape please"}' >/dev/null
 wait_for "$SCOUT" "e['type']=='text' and 'outside your folder' in e['text']"
 [ ! -e "$FLEET51_BOTS_DIR/escaped.txt" ] || fail "bot wrote outside its folder"
 
+step "Undo: a reply that changed files can be undone"
+api "/api/bots/$SCOUT/messages" '{"text":"break it"}' >/dev/null
+wait_for "$SCOUT" "e['type']=='text' and 'wrote notes.md' in e['text'] and e['seq']>$(api "/api/bots/$SCOUT/messages" | json "max(x['seq'] for x in d if x['type']=='checkpoint')")"
+[ "$(cat "$FLEET51_BOTS_DIR/Scout/notes.md")" = "broken" ] || fail "notes.md not overwritten"
+CK=$(api "/api/bots/$SCOUT/messages" | json "[e['id'] for e in d if e['type']=='checkpoint'][-1]")
+api "/api/bots/$SCOUT/undo" "{\"checkpoint\":\"$CK\"}" | grep -q '"ok":true' || fail "undo refused"
+[ "$(cat "$FLEET51_BOTS_DIR/Scout/notes.md")" = "hi" ] || fail "undo did not restore notes.md"
+wait_for "$SCOUT" "e['type']=='undone'"
+
+step "Run code: only inside the sandbox, never outside the folder"
+api "/api/bots/$SCOUT/messages" '{"text":"run code"}' >/dev/null
+wait_for "$SCOUT" "e['type']=='text' and e['text'].startswith('Tool said') and e['seq']>$(api "/api/bots/$SCOUT/messages" | json "d[-1]['seq']")"
+RAN=$(api "/api/bots/$SCOUT/messages" | json "[e['text'] for e in d if e['type']=='text'][-1]")
+echo "$RAN"
+[ ! -e "$FLEET51_BOTS_DIR/sandbox-escape.txt" ] || fail "code wrote outside the bot folder"
+if echo "$RAN" | grep -q "ran-in-sandbox"; then
+  [ -f "$FLEET51_BOTS_DIR/Scout/out.txt" ] || fail "sandboxed code could not write in its folder"
+elif [ "$(uname)" = Darwin ]; then
+  fail "the macOS sandbox did not run the code"
+else
+  echo "(no sandbox on this machine: the bot is told it cannot run programs)"
+fi
+
+step "Clear chat: messages go, the bot starts fresh"
+api "/api/bots/$FLEET/clear" '{}' >/dev/null
+[ "$(api "/api/bots/$FLEET/messages" | json 'len(d)')" -le 2 ] || fail "chat not cleared"
+api "/api/bots/$FLEET/messages" '{"text":"fresh start"}' >/dev/null
+wait_for "$FLEET" "e['type']=='text'"
+
 step "Automations: a bot runs saved instructions on a schedule, and on demand"
 AUTO=$(api /api/automations "{\"bot\":\"$SCOUT\",\"name\":\"Morning report\",\"instructions\":\"daily summary please\",\"schedule\":{\"repeat\":\"daily\",\"times\":[\"07:30\"]}}" | json 'd["id"]')
 [ "$(api /api/automations | json 'd[0]["next_run"] is not None')" = "True" ] || fail "no next run"
@@ -79,6 +108,10 @@ api "/api/automations/$AUTO/run" '{}' >/dev/null
 wait_for "$SCOUT" "e['type']=='prompt_queued' and e.get('automation')=='Morning report'"
 for _ in $(seq 100); do [ "$(api /api/automations | json 'd[0]["last_status"]')" = "done" ] && break; sleep 0.2; done
 [ "$(api /api/automations | json 'd[0]["last_status"]')" = "done" ] || { api /api/automations; fail "automation run did not finish"; }
+[ "$(api /api/automations | json 'len(d[0]["history"])')" = "1" ] || fail "run not in history"
+RUN=$(api /api/automations | json 'd[0]["history"][0]["id"]')
+api "/api/automations/$AUTO/history/delete" "{\"run\":\"$RUN\"}" >/dev/null
+[ "$(api /api/automations | json 'len(d[0]["history"])')" = "0" ] || fail "run not deleted from history"
 
 step "Update handoff: a newer service takes over and keeps the bots"
 OLD=$(python3 -c "import json; print(json.load(open('$FLEET51_HOME/daemon.json'))['pid'])")

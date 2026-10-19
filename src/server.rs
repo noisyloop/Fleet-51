@@ -70,6 +70,9 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/bots/{id}/model", post(bot_model))
         .route("/api/bots/{id}/think", post(bot_think))
         .route("/api/bots/{id}/delete", post(bot_delete))
+        .route("/api/bots/{id}/undo", post(bot_undo))
+        .route("/api/bots/{id}/clear", post(bot_clear))
+        .route("/api/automations/{id}/history/delete", post(delete_runs))
         .route("/api/bots/{id}/reveal", post(bot_reveal))
         .route("/api/automations", get(automations).post(create_automation))
         .route("/api/automations/{id}", post(edit_automation))
@@ -214,6 +217,24 @@ async fn bot_think(State(d): D, Path(id): Path<String>, Json(t): Json<Think>) ->
     Ok(Json(bot_json(&s)))
 }
 
+#[derive(Deserialize)]
+struct Undo {
+    checkpoint: String,
+}
+
+async fn bot_undo(State(d): D, Path(id): Path<String>, Json(u): Json<Undo>) -> R<Value> {
+    let s = d.bot(&id)?;
+    let d2 = d.clone();
+    tokio::task::spawn_blocking(move || d2.undo(&s, &u.checkpoint)).await??;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn bot_clear(State(d): D, Path(id): Path<String>) -> R<Value> {
+    let s = d.bot(&id)?;
+    d.clear_chat(&s);
+    Ok(Json(bot_json(&s)))
+}
+
 async fn bot_delete(State(d): D, Path(id): Path<String>) -> R<Value> {
     let s = d.bot(&id)?;
     d.delete_bot(&s);
@@ -286,6 +307,17 @@ async fn edit_automation(State(d): D, Path(id): Path<String>, Json(a): Json<Draf
 async fn run_automation(State(d): D, Path(id): Path<String>) -> R<Value> {
     let d2 = d.clone();
     tokio::task::spawn_blocking(move || crate::automations::run(&d2, &id)).await??;
+    Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize)]
+struct DeleteRuns {
+    /// One run's id; leave out to clear the whole history.
+    run: Option<String>,
+}
+
+async fn delete_runs(State(d): D, Path(id): Path<String>, Json(r): Json<DeleteRuns>) -> R<Value> {
+    crate::automations::delete_runs(&d, &id, r.run.as_deref())?;
     Ok(Json(json!({"ok": true})))
 }
 

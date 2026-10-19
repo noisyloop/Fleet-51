@@ -81,6 +81,15 @@ pub enum Ev {
         clean: bool,
     },
     Archived,
+    /// The bot copied its folder aside before changing it; Undo restores this copy.
+    Checkpoint {
+        id: String,
+    },
+    Undone {
+        id: String,
+    },
+    /// The chat was cleared: earlier messages are hidden and the bot starts a new conversation.
+    Cleared,
     Note {
         level: String,
         message: String,
@@ -171,6 +180,9 @@ pub struct State {
     pub created: u64,
     pub updated: u64,
     pub last_seq: u64,
+    /// Events up to here were cleared from the chat.
+    #[serde(default)]
+    pub cleared_seq: u64,
 }
 
 impl State {
@@ -248,7 +260,18 @@ impl State {
                 };
             }
             Ev::Archived => self.archived = true,
-            Ev::Reasoning { .. } | Ev::ToolCall { .. } | Ev::StopRequested | Ev::Note { .. } => {}
+            Ev::Cleared => {
+                self.cleared_seq = e.seq;
+                self.provider_session = None;
+                self.open_turn = None;
+                self.last_text = None;
+            }
+            Ev::Reasoning { .. }
+            | Ev::ToolCall { .. }
+            | Ev::StopRequested
+            | Ev::Note { .. }
+            | Ev::Checkpoint { .. }
+            | Ev::Undone { .. } => {}
         }
     }
 
