@@ -47,6 +47,9 @@ pub enum Ev {
         /// The automation that sent this message, if it was not typed by the user.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         automation: Option<String>,
+        /// Files the user added to the bot's folder with this message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<String>,
     },
     PromptDelivered {
         id: String,
@@ -154,6 +157,8 @@ pub struct Prompt {
     pub delivered: bool,
     #[serde(default)]
     pub automation: Option<String>,
+    #[serde(default)]
+    pub attachments: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -229,11 +234,13 @@ impl State {
                 id,
                 text,
                 automation,
+                attachments,
             } => self.pending.push(Prompt {
                 id: id.clone(),
                 text: text.clone(),
                 delivered: false,
                 automation: automation.clone(),
+                attachments: attachments.clone(),
             }),
             Ev::PromptDelivered { id } => {
                 if let Some(p) = self.pending.iter_mut().find(|p| &p.id == id) {
@@ -312,6 +319,7 @@ mod tests {
                 id: "a".into(),
                 text: "one".into(),
                 automation: None,
+                attachments: vec![],
             },
         ));
         s.apply(&ev(
@@ -320,6 +328,7 @@ mod tests {
                 id: "b".into(),
                 text: "two".into(),
                 automation: None,
+                attachments: vec![],
             },
         ));
         s.apply(&ev(3, Ev::PromptDelivered { id: "a".into() }));

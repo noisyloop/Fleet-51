@@ -184,8 +184,9 @@ impl Daemon {
         s: &Arc<Session>,
         text: &str,
         automation: Option<&str>,
+        attachments: &[String],
     ) -> String {
-        let (id, live) = s.queue_prompt(text, automation);
+        let (id, live) = s.queue_prompt(text, automation, attachments);
         if !live && !s.is_running() {
             session::start(self.clone(), s.clone(), s.state().provider_session);
         }

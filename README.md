@@ -20,6 +20,10 @@ Create a bot, give it a name and a face, pick a free model, and chat. Run as man
   window (⋯ › Open in new window) to have several conversations side by side.
 - **Pick a model per bot:** choose from the menu at the top of the chat, and download more free models
   from **Models**. Bots on different models run at the same time.
+- **Add files:** drop files on a chat (or press +). They're copied into the bot's folder, your
+  originals are never touched. PDFs and Word documents are read inside the sandbox and their text is
+  given to the bot; images go to models that can see, such as gemma4. Files a bot writes are marked
+  like downloads, so macOS asks before opening a script or app it made.
 - **Automations:** give a bot a job on a schedule: once, hourly, daily, weekdays, weekly, monthly,
   annually, or your own days and times. Name it, write the instructions, and get a notification when
   it's done. The run and its reply land in the bot's chat.

@@ -10,7 +10,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-MODELS = {"qwen3:1.7b": 1107409472, "qwen3:0.6b": 396705472}
+MODELS = {"qwen3:1.7b": 1107409472, "qwen3:0.6b": 396705472, "gemma4:e4b": 9600000000}
 
 
 class H(BaseHTTPRequestHandler):
@@ -43,7 +43,8 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         b = self.body()
         if self.path == "/api/show":
-            self.send({"capabilities": ["completion", "tools", "thinking"]})
+            caps = ["completion", "tools", "thinking"] + (["vision"] if b.get("model", "").startswith("gemma4") else [])
+            self.send({"capabilities": caps})
         elif self.path == "/api/pull":
             self.send_response(200)
             self.end_headers()
@@ -55,6 +56,11 @@ class H(BaseHTTPRequestHandler):
             if model not in MODELS:
                 return self.send({"error": {"message": f"model '{model}' not found"}}, 404)
             last = b["messages"][-1]
+            if isinstance(last.get("content"), list):
+                images = sum(1 for p in last["content"] if p.get("type") == "image_url" and p["image_url"]["url"].startswith("data:image/png;base64,"))
+                text = " ".join(p.get("text", "") for p in last["content"] if p.get("type") == "text")
+                self.send({"choices": [{"message": {"role": "assistant", "content": f"I can see {images} image(s). {text[-80:]}"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+                return
             msg = {"role": "assistant", "content": f"Hello from {model}."}
             if last["role"] == "user" and last["content"].startswith("[Automation"):
                 msg = {"role": "assistant", "content": f"Automation ran with {len(b['messages'])} messages."}

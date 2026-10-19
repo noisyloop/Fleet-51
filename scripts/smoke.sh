@@ -103,6 +103,25 @@ else
   echo "(no sandbox on this machine: running code cannot be switched on)"
 fi
 
+step "Adding files: copied into the bot's folder, documents read in the sandbox, images seen"
+python3 "$ROOT/scripts/make_test_files.py" "$WORK/in"
+upload() { curl -sS -H "Authorization: Bearer $(cat "$FLEET51_HOME/token")" --data-binary "@$1" "http://127.0.0.1:$PORT/api/bots/$SCOUT/files?name=$2"; }
+upload "$WORK/in/report.pdf" report.pdf | grep -q '"text_file":"report.pdf.txt"' || fail "PDF text not read"
+grep -q "Fleet-51 test document" "$FLEET51_BOTS_DIR/Scout/report.pdf.txt" || fail "wrong PDF text"
+upload "$WORK/in/letter.docx" letter.docx >/dev/null
+grep -q "Dear Fleet & crew" "$FLEET51_BOTS_DIR/Scout/letter.docx.txt" || fail "Word text not read"
+# A name that tries to leave the folder is cleaned; nothing lands outside.
+upload "$WORK/in/alien.png" "..%2F..%2Fescaped-upload.png" | grep -q '"name":"escaped-upload.png"' || fail "upload name not cleaned"
+[ ! -e "$FLEET51_BOTS_DIR/escaped-upload.png" ] && [ -f "$FLEET51_BOTS_DIR/Scout/escaped-upload.png" ] || fail "upload landed outside the folder"
+# Adding the same name again never overwrites.
+upload "$WORK/in/alien.png" alien.png >/dev/null; upload "$WORK/in/alien.png" alien.png | grep -q '"name":"alien (2).png"' || fail "upload overwrote a file"
+api "/api/bots/$SCOUT/messages" '{"text":"what is this?","attachments":["../../etc/passwd"]}' | grep -q "not in" || fail "a file outside the folder was attached"
+LAST=$(api "/api/bots/$SCOUT/messages" | json "d[-1]['seq']")
+api "/api/bots/$SCOUT/model" '{"model":"gemma4:e4b"}' >/dev/null
+api "/api/bots/$SCOUT/messages" '{"text":"what is in the picture and the report?","attachments":["alien.png","report.pdf"]}' >/dev/null
+wait_for "$SCOUT" "e['type']=='prompt_queued' and e.get('attachments')==['alien.png','report.pdf']"
+wait_for "$SCOUT" "e['type']=='text' and 'I can see 1 image' in e['text'] and 'report.pdf.txt' in e['text'] and e['seq']>$LAST"
+
 step "Clear chat: messages go, the bot starts fresh"
 api "/api/bots/$FLEET/clear" '{}' >/dev/null
 [ "$(api "/api/bots/$FLEET/messages" | json 'len(d)')" -le 2 ] || fail "chat not cleared"

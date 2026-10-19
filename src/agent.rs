@@ -247,6 +247,7 @@ fn run_tool(
             }
             let content = s("content")?;
             std::fs::write(&p, &content)?;
+            mark_made_by_bot(&p);
             Ok(format!(
                 "wrote {} ({} bytes)",
                 p.strip_prefix(root).unwrap_or(&p).display(),
@@ -261,6 +262,7 @@ fn run_tool(
                 0 => bail!("old_text not found"),
                 1 => {
                     std::fs::write(&p, text.replacen(&old, &new, 1))?;
+                    mark_made_by_bot(&p);
                     Ok("edited".into())
                 }
                 n => bail!("old_text occurs {n} times; include more context"),
@@ -385,6 +387,63 @@ fn say(session: &str, block: Value) {
     out(
         json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [block]}}),
     );
+}
+
+/// On macOS, tag a file a bot wrote the way downloads are tagged, so macOS asks before opening
+/// it if it turns out to be a script or app.
+fn mark_made_by_bot(path: &Path) {
+    if cfg!(target_os = "macos") {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = std::process::Command::new("/usr/bin/xattr")
+            .args([
+                "-w",
+                "com.apple.quarantine",
+                &format!("0082;{secs:x};Fleet-51;"),
+            ])
+            .arg(path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Whether a model accepts images (Ollama reports a "vision" capability).
+fn can_see(model: &str) -> bool {
+    ureq::post(&format!("{}/api/show", ollama_root()))
+        .send_json(json!({"model": model}))
+        .ok()
+        .and_then(|mut r| r.body_mut().read_json::<Value>().ok())
+        .and_then(|s| s["capabilities"].as_array().cloned())
+        .is_some_and(|c| c.iter().any(|x| x == "vision"))
+}
+
+/// The line added to a message that comes with files.
+fn attachment_note(root: &Path, names: &[String], has_images: bool, sees: bool) -> String {
+    let described: Vec<String> = names
+        .iter()
+        .map(|n| {
+            let text = format!("{n}.txt");
+            if root.join(&text).is_file() {
+                format!("{n} (its text is in {text})")
+            } else {
+                n.clone()
+            }
+        })
+        .collect();
+    let mut note = format!(
+        "[The user added these files to your folder: {}. Read them with your tools as needed.]",
+        described.join(", ")
+    );
+    if has_images && !sees {
+        note.push_str(
+            " [This model can't see images. If the request needs the picture, say so and suggest \
+             switching this bot to a model that can see, such as gemma4 or qwen2.5vl.]",
+        );
+    }
+    note
 }
 
 /// How an automation's instructions reach the bot: framed as a task the user set up, to carry out
@@ -516,7 +575,37 @@ pub fn run(o: Opts) -> Result<()> {
             Some(name) => automation_prompt(name, &text),
             None => text,
         };
-        messages.push(json!({"role": "user", "content": text}));
+        // Files the user added with this message: say where they are, and show images to
+        // models that can see.
+        let attached: Vec<String> = msg["attachments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(crate::files::clean_name))
+            .filter(|n| root.join(n).is_file())
+            .collect();
+        let images = crate::files::image_urls(&root, &attached);
+        let sees = !images.is_empty() && can_see(&model);
+        let text = if attached.is_empty() {
+            text
+        } else {
+            format!(
+                "{text}\n\n{}",
+                attachment_note(&root, &attached, !images.is_empty(), sees)
+            )
+        };
+        if sees {
+            let mut parts = vec![json!({"type": "text", "text": text})];
+            parts.extend(
+                images
+                    .iter()
+                    .map(|u| json!({"type": "image_url", "image_url": {"url": u}})),
+            );
+            messages.push(json!({"role": "user", "content": parts}));
+        } else {
+            messages.push(json!({"role": "user", "content": text}));
+        }
+        let user_at = messages.len() - 1;
         let (mut tin, mut tout) = (0u64, 0u64);
         let mut last = String::new();
         let mut error: Option<String> = None;
@@ -617,6 +706,12 @@ pub fn run(o: Opts) -> Result<()> {
             }
             if step + 1 == o.max_steps {
                 last = format!("stopped after {} steps", o.max_steps);
+            }
+        }
+        // Images are sent once; the saved conversation keeps just the text.
+        if sees {
+            if let Some(m) = messages.get_mut(user_at) {
+                m["content"] = json!(text);
             }
         }
         // Keep the automation's instructions and final answer in the chat's memory, so you can

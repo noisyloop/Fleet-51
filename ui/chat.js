@@ -9,11 +9,21 @@ const el = (tag, attrs = {}, ...kids) => {
     if (k === 'class') n.className = v;
     else if (k === 'text') n.textContent = v;
     else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else if (k === 'autofill') continue;
     else n.setAttribute(k, v === true ? '' : v);
   }
   for (const k of kids.flat()) if (k != null) n.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  if ((tag === 'input' || tag === 'textarea') && !attrs.autofill) noAutofill(n);
   return n;
 };
+// No autofill or remembered entries anywhere: what you typed before is never offered again.
+function noAutofill(n) {
+  n.setAttribute('autocomplete', 'off');
+  n.setAttribute('autocorrect', 'off');
+  n.setAttribute('autocapitalize', 'off');
+  n.setAttribute('data-form-type', 'other');
+}
+document.querySelectorAll('input, textarea').forEach(noAutofill);
 const store = {
   get(k, d) { try { const v = localStorage.getItem('fleet51.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('fleet51.' + k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
@@ -172,6 +182,9 @@ async function select(id, open = true) {
   lastSeq = 0;
   prompts = new Map();
   typingEl = null;
+  // Files added for another bot went to that bot's folder.
+  attaching = [];
+  renderPending();
   const b = bot();
   if (!b) return;
   try {
@@ -298,7 +311,8 @@ function render(e) {
   switch (e.type) {
     case 'prompt_queued': {
       const st = el('span', { class: 'st' });
-      add(el('div', { class: 'm-user' }, e.automation ? el('span', { class: 'auto-tag' }, '⚡ ' + e.automation) : null, e.text, st));
+      const files = (e.attachments || []).length ? el('div', { class: 'files' }, e.attachments.map((n) => el('span', { class: 'chip', title: 'Show in Finder', onclick: () => reveal(n) }, el('span', { text: `📎 ${n}` })))) : null;
+      add(el('div', { class: 'm-user' }, e.automation ? el('span', { class: 'auto-tag' }, '⚡ ' + e.automation) : null, files, e.text, st));
       prompts.set(e.id, st);
       scrollDown(true);
       break;
@@ -320,6 +334,10 @@ function render(e) {
     case 'tool_call': {
       const a = e.input || {};
       if (e.name === 'run_command') { add(el('div', { class: 'm-tool' }, 'Ran ', el('code', { text: String(a.command || '').slice(0, 120) }))); break; }
+      if ((e.name === 'write_file' || e.name === 'edit_file') && a.path) {
+        add(el('div', { class: 'm-file' }, `${e.name === 'write_file' ? 'Wrote' : 'Edited'} `, el('code', { text: String(a.path).slice(0, 80) }), el('button', { type: 'button', onclick: () => reveal(String(a.path)) }, 'Show in Finder')));
+        break;
+      }
       const what = a.path || a.file_path || a.command || a.pattern || '';
       add(el('div', { class: 'm-tool', text: `Used ${e.name.replace(/_/g, ' ')}${what ? ' · ' + String(what).slice(0, 80) : ''}` }));
       break;
@@ -360,11 +378,53 @@ async function send(ev) {
   ev.preventDefault();
   const text = $('#input').value.trim();
   const b = bot();
-  if (!text || !b) return;
+  if (attaching.some((a) => a.busy)) { toast('Wait for the files to finish adding'); return; }
+  const attachments = attaching.filter((a) => a.name).map((a) => a.name);
+  if ((!text && !attachments.length) || !b) return;
   $('#input').value = '';
   autosize();
-  try { await api(`/api/bots/${b.id}/messages`, { text }); } catch (e) { toast(e.message); $('#input').value = text; }
+  const kept = attaching;
+  attaching = [];
+  renderPending();
+  try { await api(`/api/bots/${b.id}/messages`, { text, attachments }); } catch (e) { toast(e.message); $('#input').value = text; attaching = kept; renderPending(); }
 }
+
+// ---- adding files ------------------------------------------------------------------
+// Files are copied into the bot's folder as soon as they are picked or dropped, then sent along
+// with the next message.
+let attaching = [];
+const FILE_ICON = { image: '🖼', pdf: '📄', word: '📄', text: '📝', other: '📎' };
+function renderPending() {
+  const p = $('#pending');
+  p.hidden = !attaching.length;
+  p.replaceChildren(...attaching.map((a) => el('span', { class: 'chip' + (a.busy ? ' busy' : '') + (a.note ? ' warn' : ''), title: a.note || (a.text_file ? `The bot reads its text from ${a.text_file}` : a.name || a.label) },
+    el('span', { text: `${FILE_ICON[a.kind] || '📎'} ${a.name || a.label}${a.busy ? ' · adding…' : ''}` }),
+    el('button', { type: 'button', 'aria-label': `Remove ${a.name || a.label}`, onclick: () => { attaching = attaching.filter((x) => x !== a); renderPending(); } }, '×'))));
+}
+async function addFiles(list) {
+  const b = bot();
+  if (!b) return;
+  for (const f of list) {
+    if (f.size > 50 * 1024 * 1024) { toast(`${f.name} is too big (the limit is 50 MB)`); continue; }
+    const a = { label: f.name, busy: true };
+    attaching.push(a);
+    renderPending();
+    try {
+      const res = await fetch(`/api/bots/${b.id}/files?name=${encodeURIComponent(f.name)}`, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: f });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      Object.assign(a, data, { busy: false });
+      if (data.kind === 'image' && !isVision(b.model)) toast(`${b.model} can't see images. Try a model that can, like gemma4 or qwen2.5vl (Models).`);
+      if (data.note) toast(`${data.name}: ${data.note}`);
+    } catch (e) {
+      attaching = attaching.filter((x) => x !== a);
+      toast(`${f.name}: ${e.message}`);
+    }
+    renderPending();
+  }
+}
+function isVision(name) { return installed.some((m) => m.name === name && m.vision); }
+function reveal(path) { const b = bot(); if (b) api(`/api/bots/${b.id}/reveal`, path ? { path } : {}).catch((e) => toast(e.message)); }
 function autosize() { const t = $('#input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 200) + 'px'; }
 
 // ---- new bot ---------------------------------------------------------------------
@@ -413,24 +473,40 @@ async function download(name) {
   if (!name) return;
   try { await api('/api/models/pull', { name }); pulls.set(name, { name, status: 'starting', completed: 0, total: 0, done: false }); renderModelsDialog(); } catch (e) { toast(e.message); }
 }
+// Models dialog: a find box that filters both lists as you type, and downloads by exact name.
+let modelQuery = '';
+const modelLists = el('div', { class: 'model-lists' });
+const modelFind = el('input', { type: 'text', placeholder: 'Find a model, or type a name like qwen3:8b', 'aria-label': 'Find a model', spellcheck: 'false', oninput: (e) => { modelQuery = e.target.value.trim(); renderModelsDialog(); }, onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); if (modelQuery) download(modelQuery); } } });
 function renderModelsDialog() {
   if (!$('#models-dlg').open) return;
+  const q = modelQuery.toLowerCase();
+  const match = (s) => !q || s.toLowerCase().includes(q);
   const have = (n) => installed.some((m) => m.name === n || m.name === n + ':latest');
   const row = (name, sub, action) => {
     const p = pulls.get(name);
     return el('div', { class: 'mrow' }, el('b', { text: name }), action, el('div', { class: 'sub', text: p && !p.done ? `${p.status} · ${pct(p)}%` : p && p.error ? `Failed: ${p.error}` : sub }), p && !p.done ? el('div', { class: 'bar' }, el('div', { style: `width:${pct(p)}%` })) : null);
   };
-  const custom = el('input', { placeholder: 'Any model from ollama.com/library', 'aria-label': 'Model name' });
-  $('#models-body').replaceChildren(
+  const shown = suggested.filter((s) => !have(s.name) && match(`${s.name} ${s.note}`));
+  const exact = q && !installed.some((m) => m.name === modelQuery) && !suggested.some((s) => s.name === modelQuery);
+  const valid = /^[a-z0-9][a-z0-9._\/-]*(:[a-z0-9._-]+)?$/i.test(modelQuery);
+  // Offer "download this exact name" when it looks like a real name, not a search word.
+  const byName = exact && valid && (!shown.length || modelQuery.includes(':')) ? el('div', { class: 'mrow' }, el('b', { text: modelQuery }),
+    el('button', { type: 'button', class: 'pill', disabled: !online, onclick: () => download(modelQuery) }, 'Download'),
+    el('div', { class: 'sub', text: /cloud/.test(modelQuery) ? '☁ A cloud model: it runs on Ollama\'s servers, so chats with it leave this computer.' : 'Downloads this exact name from Ollama. Check its size first: some models are hundreds of GB.' })) : null;
+  const mine = installed.filter((m) => match(`${m.name}${m.vision ? ' sees images vision' : ''}${m.cloud ? ' cloud' : ''}`));
+  // The find box stays put (re-rendering it would lose focus); only the lists below change.
+  if (!modelFind.isConnected) $('#models-body').replaceChildren(el('div', { class: 'custom-model' }, modelFind), modelLists);
+  modelLists.replaceChildren(...[
     online ? null : el('div', { class: 'offline-note', text: "You're offline. Your downloaded models still work; downloading new ones needs the internet." }),
+    byName,
     el('div', { class: 'model-list' }, el('h3', { text: 'On this computer' }),
-      installed.length ? installed.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: 'None yet.' })),
+      mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
     el('div', { class: 'model-list' }, el('h3', { text: 'Free models to download' }),
-      suggested.filter((s) => !have(s.name)).map((s) => {
+      shown.length ? shown.map((s) => {
         const p = pulls.get(s.name);
         return row(s.name, `${s.size} · ${s.note}`, el('button', { type: 'button', class: 'pill', disabled: (p && !p.done) || !online, onclick: () => download(s.name) }, p && !p.done ? 'Downloading…' : 'Download'));
-      })),
-    el('div', { class: 'custom-model' }, custom, el('button', { type: 'button', class: 'pill', onclick: () => download(custom.value) }, 'Download')));
+      }) : el('div', { class: 'muted', text: q ? 'No suggested model matches.' : 'You have them all.' })),
+    el('a', { class: 'browse', href: `https://ollama.com/search${q ? '?q=' + encodeURIComponent(modelQuery) : ''}`, target: '_blank', rel: 'noopener' }, `Browse all models on ollama.com${q ? ` for “${modelQuery}”` : ''} ↗`)].filter(Boolean));
 }
 
 function setOnline(v) {
@@ -687,6 +763,18 @@ async function boot() {
 
 // ---- wiring -----------------------------------------------------------------------------------
 $('#composer').addEventListener('submit', send);
+$('#btn-attach').onclick = () => $('#file-input').click();
+$('#file-input').onchange = (e) => { addFiles([...e.target.files]); e.target.value = ''; };
+{
+  let depth = 0;
+  const chat = $('#chat');
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+  chat.addEventListener('dragenter', (e) => { if (!hasFiles(e) || !bot()) return; e.preventDefault(); depth++; $('#drop').hidden = false; });
+  chat.addEventListener('dragover', (e) => { if (hasFiles(e) && bot()) e.preventDefault(); });
+  chat.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; $('#drop').hidden = true; } });
+  chat.addEventListener('drop', (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth = 0; $('#drop').hidden = true; addFiles([...e.dataTransfer.files]); });
+}
+$('#input').addEventListener('paste', (e) => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); } });
 $('#input').addEventListener('input', autosize);
 $('#input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#composer').requestSubmit(); } });
 $('#btn-new').onclick = openNewBot;
@@ -695,7 +783,7 @@ $('#nb-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') create
 $('#nb-create').addEventListener('click', createBot);
 $('#btn-search').onclick = () => { const w = $('#search-wrap'); w.hidden = !w.hidden; if (!w.hidden) $('#search').focus(); else { $('#search').value = ''; renderBots(); } };
 $('#search').oninput = renderBots;
-$('#btn-models').onclick = () => { $('#models-dlg').showModal(); loadModels().then(renderModelsDialog); renderModelsDialog(); };
+$('#btn-models').onclick = () => { modelQuery = ''; modelFind.value = ''; $('#models-dlg').showModal(); renderModelsDialog(); modelFind.focus(); loadModels().then(renderModelsDialog); };
 $('#btn-autos').onclick = openAutos;
 $('#autos-new').onclick = () => openAuto(null);
 $('#menu-auto').onclick = () => { const b = bot(); if (b) openAuto(null, b.id); };
@@ -720,7 +808,7 @@ $('#btn-think').onclick = async () => {
   try { Object.assign(b, await api(`/api/bots/${b.id}/think`, { think: !b.think })); renderThink(); } catch (e) { toast(e.message); }
 };
 $('#menu-window').onclick = () => { const b = bot(); if (b) window.open(`/?bot=${encodeURIComponent(b.id)}`, '_blank'); };
-$('#menu-folder').onclick = () => { const b = bot(); if (b) api(`/api/bots/${b.id}/reveal`, {}).catch((e) => toast(e.message)); };
+$('#menu-folder').onclick = () => reveal();
 $('#menu-delete').onclick = () => deleteBot(bot());
 $('#menu-clear').onclick = () => clearChat(bot());
 $('#ctx-window').onclick = () => { if (ctxBot) window.open(`/?bot=${encodeURIComponent(ctxBot.id)}`, '_blank'); };

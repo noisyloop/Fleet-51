@@ -24,6 +24,7 @@ pub enum Cmd {
         text: String,
         /// Sent by this automation; the bot runs it as a standalone task.
         automation: Option<String>,
+        attachments: Vec<String>,
     },
     /// Stop for good (the bot was deleted or the user stopped it).
     Stop,
@@ -136,19 +137,26 @@ impl Session {
 
     /// Queue a message. Holding the command lock while appending means a concurrent (re)start
     /// either sees it in `pending` or receives it on the channel, never both.
-    pub fn queue_prompt(&self, text: &str, automation: Option<&str>) -> (String, bool) {
+    pub fn queue_prompt(
+        &self,
+        text: &str,
+        automation: Option<&str>,
+        attachments: &[String],
+    ) -> (String, bool) {
         let guard = self.cmd.lock().unwrap();
         let id = short_id("p");
         self.emit(Ev::PromptQueued {
             id: id.clone(),
             text: text.to_string(),
             automation: automation.map(str::to_string),
+            attachments: attachments.to_vec(),
         });
         let live = guard.as_ref().is_some_and(|tx| {
             tx.send(Cmd::Prompt {
                 id: id.clone(),
                 text: text.to_string(),
                 automation: automation.map(str::to_string),
+                attachments: attachments.to_vec(),
             })
             .is_ok()
         });
@@ -162,6 +170,7 @@ impl Session {
                 id: p.id,
                 text: p.text,
                 automation: p.automation,
+                attachments: p.attachments,
             });
         }
         *guard = Some(tx);
@@ -189,7 +198,7 @@ fn requeue_interrupted(s: &Session) {
             level: "info".into(),
             message: "the last reply was interrupted; asking again".into(),
         });
-        s.queue_prompt(&text, None);
+        s.queue_prompt(&text, None, &[]);
     }
 }
 
@@ -305,8 +314,8 @@ async fn run_agent(
                 _ => break,
             },
             cmd = rx.recv(), if open => match cmd {
-                Some(Cmd::Prompt { id, text, automation }) => {
-                    let msg = json!({"type": "user", "automation": automation, "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
+                Some(Cmd::Prompt { id, text, automation, attachments }) => {
+                    let msg = json!({"type": "user", "automation": automation, "attachments": attachments, "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
                     let ok = match stdin.as_mut() {
                         Some(w) => w.write_all(format!("{msg}\n").as_bytes()).await.is_ok() && w.flush().await.is_ok(),
                         None => false,

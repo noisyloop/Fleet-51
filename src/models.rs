@@ -27,6 +27,18 @@ pub const SUGGESTED: &[(&str, &str, bool, &str)] = &[
     ),
     ("qwen2.5-coder:1.5b", "1.0 GB", true, "Small coding model"),
     (
+        "gemma4",
+        "about 10 GB",
+        true,
+        "Sees images (and reads documents); needs 16 GB of memory",
+    ),
+    (
+        "qwen2.5vl:3b",
+        "about 3 GB",
+        false,
+        "Sees images; smaller and faster",
+    ),
+    (
         "qwen2.5-coder:7b",
         "4.7 GB",
         true,
@@ -103,7 +115,8 @@ pub fn installed() -> Result<Vec<Value>> {
             "size": m["size"],
             "parameter_size": m["details"]["parameter_size"],
             "quantization": m["details"]["quantization_level"],
-            "tools": caps.map(|c| c.iter().any(|x| x == "tools")),
+            "tools": caps.as_ref().map(|c| c.iter().any(|x| x == "tools")),
+            "vision": caps.as_ref().is_some_and(|c| c.iter().any(|x| x == "vision")),
             // Ollama "cloud" models run on Ollama's servers: your messages leave this computer.
             "cloud": m["remote_host"].is_string() || m["remote_model"].is_string()
                 || name.ends_with("-cloud") || name.ends_with(":cloud"),

@@ -4,6 +4,7 @@ mod checkpoints;
 mod client;
 mod daemon;
 mod events;
+mod files;
 mod home;
 mod models;
 mod runtime;
@@ -54,6 +55,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<ModelsCmd>,
     },
+    /// Save the text of a PDF or Word document (runs inside the sandbox)
+    #[command(hide = true)]
+    Extract {
+        input: std::path::PathBuf,
+        output: std::path::PathBuf,
+    },
     /// The bot process the service runs for each chat
     #[command(hide = true)]
     Agent {
@@ -99,6 +106,7 @@ fn real_main() -> Result<()> {
             // Agent pipes and open streams can keep the runtime busy; we are done.
             std::process::exit(0);
         }
+        Cmd::Extract { input, output } => files::extract_command(&input, &output),
         Cmd::Agent {
             model,
             resume,
@@ -246,7 +254,9 @@ fn client_cmd(home: &Home, cmd: Cmd) -> Result<()> {
                 println!("deleted {name}");
             }
         },
-        Cmd::Daemon { .. } | Cmd::Up { .. } | Cmd::Agent { .. } => unreachable!(),
+        Cmd::Daemon { .. } | Cmd::Up { .. } | Cmd::Agent { .. } | Cmd::Extract { .. } => {
+            unreachable!()
+        }
     }
     Ok(())
 }
