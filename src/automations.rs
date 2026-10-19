@@ -550,6 +550,28 @@ pub fn system_notification(title: &str, body: &str) {
             body,
         ]);
         c
+    } else if cfg!(windows) {
+        // A Windows toast through PowerShell. The text travels in environment variables and
+        // is XML-escaped, never pasted into the script.
+        let script = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+            $t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+            $n = $t.GetElementsByTagName('text'); \
+            $n.Item(0).AppendChild($t.CreateTextNode($env:FLEET51_TITLE)) > $null; \
+            $n.Item(1).AppendChild($t.CreateTextNode($env:FLEET51_BODY)) > $null; \
+            [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Fleet-51').Show([Windows.UI.Notifications.ToastNotification]::new($t))";
+        let mut c = std::process::Command::new("powershell.exe");
+        c.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .env("FLEET51_TITLE", title)
+        .env("FLEET51_BODY", body);
+        crate::home::no_window(&mut c);
+        c
     } else {
         let mut c = std::process::Command::new("notify-send");
         c.args(["--app-name=Fleet-51", title, body]);

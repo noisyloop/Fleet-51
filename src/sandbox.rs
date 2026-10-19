@@ -60,8 +60,7 @@ fn detect() -> Option<Kind> {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
+    Some(crate::home::user_home())
         .and_then(|h| h.canonicalize().ok())
         .unwrap_or_else(|| PathBuf::from("/nonexistent"))
 }
@@ -173,12 +172,29 @@ pub fn run_program(
             c
         }
     };
+    // A clean environment. Windows programs also need a few system variables to start at all.
+    let keep: Vec<(String, String)> = if cfg!(windows) {
+        [
+            "SystemRoot",
+            "SystemDrive",
+            "windir",
+            "PATH",
+            "PATHEXT",
+            "COMSPEC",
+        ]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v)))
+        .collect()
+    } else {
+        vec![(
+            "PATH".into(),
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".into(),
+        )]
+    };
+    crate::home::no_window(&mut cmd);
     cmd.current_dir(&folder)
         .env_clear()
-        .env(
-            "PATH",
-            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        )
+        .envs(keep)
         .env("HOME", &folder)
         .env("TMPDIR", &tmp)
         .env("LANG", "en_US.UTF-8")

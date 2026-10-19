@@ -11,12 +11,7 @@ impl Home {
     pub fn resolve() -> Home {
         let root = std::env::var_os("FLEET51_HOME")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let home = std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| ".".into());
-                home.join(".fleet51")
-            });
+            .unwrap_or_else(|| user_home().join(".fleet51"));
         Home { root }
     }
 
@@ -85,8 +80,38 @@ pub fn short_id(prefix: &str) -> String {
     format!("{prefix}-{}", &u[..8])
 }
 
+/// The user's home folder (HOME, or USERPROFILE on Windows).
+pub fn user_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| ".".into())
+}
+
+/// On Windows, run a helper program without flashing a console window.
+pub fn no_window(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Is `pid` a running (not zombie) process?
 pub fn pid_alive(pid: u32) -> bool {
+    if cfg!(windows) {
+        let mut c = std::process::Command::new("tasklist");
+        c.args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]);
+        no_window(&mut c);
+        return c
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")));
+    }
     if cfg!(target_os = "linux") {
         // A zombie still has a /proc entry but is not running.
         match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
@@ -116,7 +141,18 @@ pub fn pid_belongs_to_session(pid: u32, session: &str) -> bool {
 }
 
 pub fn kill_pid(pid: u32) {
-    let _ = std::process::Command::new("kill")
-        .arg(pid.to_string())
+    let mut c = if cfg!(windows) {
+        let mut c = std::process::Command::new("taskkill");
+        c.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        c
+    } else {
+        let mut c = std::process::Command::new("kill");
+        c.arg(pid.to_string());
+        c
+    };
+    no_window(&mut c);
+    let _ = c
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status();
 }

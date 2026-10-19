@@ -378,6 +378,15 @@ async fn bot_reveal(State(d): D, Path(id): Path<String>, body: Option<Json<Revea
             c.args(["-a", "Finder"]);
         }
         c.arg(&target).spawn()?;
+    } else if cfg!(windows) {
+        // Explorer shows the folder, or selects the file; it never opens the file itself.
+        let mut c = std::process::Command::new("explorer.exe");
+        if target.is_file() {
+            c.arg(format!("/select,{}", target.display()));
+        } else {
+            c.arg(&target);
+        }
+        c.spawn()?;
     } else {
         let dir = if target.is_file() {
             target.parent().map(|p| p.to_path_buf()).unwrap_or(target)

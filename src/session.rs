@@ -265,6 +265,8 @@ async fn run_agent(
     let overlay = s.dir.join("agent");
     let _ = std::fs::create_dir_all(&overlay);
     let mut cmd = tokio::process::Command::new(&d.exe);
+    #[cfg(windows)]
+    cmd.creation_flags(crate::home::CREATE_NO_WINDOW);
     cmd.arg("agent").arg("--state-dir").arg(&overlay);
     if let Some(m) = &st.model {
         cmd.args(["--model", m]);
