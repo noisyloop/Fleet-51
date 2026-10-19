@@ -123,6 +123,22 @@ const RUN_PROMPT: &str =
 /// Tools that change the folder; the first one in a reply takes an undo checkpoint.
 const CHANGES_FILES: &[&str] = &["write_file", "edit_file", "run_command"];
 
+/// The bot's folder as a confined handle: every file operation through it is resolved by the
+/// operating system inside the folder, so a link swapped in at the last moment (for example by
+/// code the bot left running) can't redirect a read or write outside it.
+fn folder(root: &Path) -> Result<cap_std::fs::Dir> {
+    Ok(cap_std::fs::Dir::open_ambient_dir(
+        root,
+        cap_std::ambient_authority(),
+    )?)
+}
+
+/// `p` (already checked by safe_path) relative to the folder.
+fn inside<'a>(root: &Path, p: &'a Path) -> Result<&'a Path> {
+    p.strip_prefix(root)
+        .map_err(|_| anyhow!("{} is outside your folder", p.display()))
+}
+
 /// Resolve a model-supplied path inside `root`, following symlinks, and refuse anything outside.
 fn safe_path(root: &Path, p: &str) -> Result<PathBuf> {
     let p = p.trim();
@@ -215,17 +231,18 @@ fn run_tool(
                 v.join("\n")
             })
         }
-        "read_file" => Ok(clip(std::fs::read_to_string(safe_path(
-            root,
-            &s("path")?,
-        )?)?)),
+        "read_file" => {
+            let p = safe_path(root, &s("path")?)?;
+            Ok(clip(folder(root)?.read_to_string(inside(root, &p)?)?))
+        }
         "search" => {
             let re = regex::Regex::new(&s("pattern")?)?;
             let mut files = vec![];
             walk(root, root, &mut files);
+            let dir = folder(root)?;
             let mut hits = vec![];
             for f in files.iter().filter(|f| !f.ends_with('/')) {
-                let Ok(text) = std::fs::read_to_string(root.join(f)) else {
+                let Ok(text) = dir.read_to_string(f) else {
                     continue;
                 };
                 for (i, l) in text.lines().enumerate() {
@@ -242,11 +259,13 @@ fn run_tool(
         }
         "write_file" => {
             let p = safe_path(root, &s("path")?)?;
-            if let Some(parent) = p.parent() {
-                std::fs::create_dir_all(parent)?;
+            let rel = inside(root, &p)?;
+            let dir = folder(root)?;
+            if let Some(parent) = rel.parent().filter(|p| !p.as_os_str().is_empty()) {
+                dir.create_dir_all(parent)?;
             }
             let content = s("content")?;
-            std::fs::write(&p, &content)?;
+            dir.write(rel, &content)?;
             mark_made_by_bot(&p);
             Ok(format!(
                 "wrote {} ({} bytes)",
@@ -256,12 +275,14 @@ fn run_tool(
         }
         "edit_file" => {
             let p = safe_path(root, &s("path")?)?;
-            let text = std::fs::read_to_string(&p)?;
+            let rel = inside(root, &p)?;
+            let dir = folder(root)?;
+            let text = dir.read_to_string(rel)?;
             let (old, new) = (s("old_text")?, s("new_text")?);
             match text.matches(&old).count() {
                 0 => bail!("old_text not found"),
                 1 => {
-                    std::fs::write(&p, text.replacen(&old, &new, 1))?;
+                    dir.write(rel, text.replacen(&old, &new, 1))?;
                     mark_made_by_bot(&p);
                     Ok("edited".into())
                 }
@@ -399,6 +420,7 @@ fn mark_made_by_bot(path: &Path) {
             .unwrap_or(0);
         let _ = std::process::Command::new("/usr/bin/xattr")
             .args([
+                "-s",
                 "-w",
                 "com.apple.quarantine",
                 &format!("0082;{secs:x};Fleet-51;"),

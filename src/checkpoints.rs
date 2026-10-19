@@ -1,7 +1,9 @@
 //! Undo for bot file changes. Before a bot's first change in a reply (writing or editing a file,
 //! or running code), its folder is copied aside; "Undo" puts the folder back exactly as it was.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use cap_std::fs::Dir;
 
 use anyhow::{bail, Context, Result};
 
@@ -10,28 +12,24 @@ const MAX_BYTES: u64 = 200 * 1024 * 1024;
 /// Checkpoints kept per bot; older ones are removed.
 pub const KEEP: usize = 30;
 
-fn files(
-    root: &Path,
-    dir: &Path,
-    out: &mut Vec<std::path::PathBuf>,
-    bytes: &mut u64,
-) -> Result<()> {
-    for e in std::fs::read_dir(dir)? {
+/// The files in `root` (relative paths), walked through a confined handle: links are never
+/// followed, and a link swapped in mid-walk can't lead outside (see agent::folder).
+fn files(dir: &Dir, rel: &Path, out: &mut Vec<PathBuf>, bytes: &mut u64) -> Result<()> {
+    for e in dir.entries()? {
         let e = e?;
-        let p = e.path();
+        let name = PathBuf::from(e.file_name());
         let ft = e.file_type()?;
-        if p.strip_prefix(root).is_ok_and(|r| r == Path::new(".tmp")) {
+        if rel.as_os_str().is_empty() && name == Path::new(".tmp") {
             continue;
         }
-        // Links are never followed, so a checkpoint can only ever contain the folder itself.
         if ft.is_symlink() {
             continue;
         }
         if ft.is_dir() {
-            files(root, &p, out, bytes)?;
+            files(&e.open_dir()?, &rel.join(&name), out, bytes)?;
         } else if ft.is_file() {
             *bytes += e.metadata()?.len();
-            out.push(p);
+            out.push(rel.join(&name));
         }
         if out.len() > MAX_FILES || *bytes > MAX_BYTES {
             bail!("the folder is too big to keep an undo copy (over {MAX_FILES} files or 200 MB)");
@@ -40,51 +38,59 @@ fn files(
     Ok(())
 }
 
-/// Copy `folder` into `dest` (which must not exist yet).
+fn open(path: &Path) -> Result<Dir> {
+    Ok(Dir::open_ambient_dir(path, cap_std::ambient_authority())?)
+}
+
+/// Copy the bot's `folder` into `dest`, Fleet-51's own copy (which must not exist yet).
 pub fn snapshot(folder: &Path, dest: &Path) -> Result<()> {
+    let src = open(folder)?;
     let mut list = Vec::new();
     let mut bytes = 0;
-    files(folder, folder, &mut list, &mut bytes)?;
+    files(&src, Path::new(""), &mut list, &mut bytes)?;
     std::fs::create_dir_all(dest)?;
-    for f in list {
-        let rel = f.strip_prefix(folder)?;
-        let to = dest.join(rel);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
+    let out = open(dest)?;
+    for rel in list {
+        if let Some(parent) = rel.parent().filter(|p| !p.as_os_str().is_empty()) {
+            out.create_dir_all(parent)?;
         }
-        std::fs::copy(&f, &to).with_context(|| format!("copying {}", rel.display()))?;
+        let data = src
+            .read(&rel)
+            .with_context(|| format!("copying {}", rel.display()))?;
+        out.write(&rel, data)?;
     }
     Ok(())
 }
 
-/// Make `folder` exactly what `checkpoint` holds: changed files come back, new ones go away.
+/// Make the bot's `folder` exactly what `checkpoint` holds: changed files come back, new ones go
+/// away. Every change goes through the confined handle, so nothing outside the folder is touched
+/// even if something inside it is swapped for a link while this runs.
 pub fn restore(folder: &Path, checkpoint: &Path) -> Result<()> {
     if !checkpoint.is_dir() {
         bail!("that undo point is no longer available");
     }
-    for e in std::fs::read_dir(folder)? {
+    let dir = open(folder)?;
+    for e in dir.entries()? {
         let e = e?;
-        if e.file_name() == ".tmp" {
+        let name = e.file_name();
+        if name == ".tmp" {
             continue;
         }
-        let p = e.path();
-        // remove_dir_all does not follow links; a link is removed, not what it points to.
         if e.file_type()?.is_dir() {
-            std::fs::remove_dir_all(&p)?;
+            dir.remove_dir_all(&name)?;
         } else {
-            std::fs::remove_file(&p)?;
+            dir.remove_file(&name)?;
         }
     }
+    let src = open(checkpoint)?;
     let mut list = Vec::new();
     let mut bytes = 0;
-    files(checkpoint, checkpoint, &mut list, &mut bytes)?;
-    for f in list {
-        let rel = f.strip_prefix(checkpoint)?;
-        let to = folder.join(rel);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
+    files(&src, Path::new(""), &mut list, &mut bytes)?;
+    for rel in list {
+        if let Some(parent) = rel.parent().filter(|p| !p.as_os_str().is_empty()) {
+            dir.create_dir_all(parent)?;
         }
-        std::fs::copy(&f, &to)?;
+        dir.write(&rel, src.read(&rel)?)?;
     }
     Ok(())
 }

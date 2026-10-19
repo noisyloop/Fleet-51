@@ -191,17 +191,28 @@ pub fn run_program(
         cmd.process_group(0);
     }
     let mut child = cmd.spawn().context("starting the sandbox")?;
+    // Output is collected as it arrives, so a program left running in the background that keeps
+    // the pipe open can't make Fleet-51 wait for it.
     let read = |r: Option<Box<dyn Read + Send>>| {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let b = buf.clone();
         std::thread::spawn(move || {
-            let mut buf = Vec::new();
             if let Some(mut r) = r {
-                let _ = r.by_ref().take(MAX_OUTPUT as u64 * 2).read_to_end(&mut buf);
-                // Drain the rest so the program never blocks on a full pipe.
-                let _ = std::io::copy(&mut r, &mut std::io::sink());
+                let mut chunk = [0u8; 8192];
+                while let Ok(n) = r.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    let mut b = b.lock().unwrap();
+                    if b.len() < MAX_OUTPUT * 2 {
+                        b.extend_from_slice(&chunk[..n]);
+                    }
+                }
             }
-            buf
-        })
+        });
+        buf
     };
+    let take = |b: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>| b.lock().unwrap().clone();
     let out = read(child.stdout.take().map(|r| Box::new(r) as _));
     let err = read(child.stderr.take().map(|r| Box::new(r) as _));
     let started = Instant::now();
@@ -222,8 +233,18 @@ pub fn run_program(
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let mut text = String::from_utf8_lossy(&out.join().unwrap_or_default()).to_string();
-    let err = String::from_utf8_lossy(&err.join().unwrap_or_default()).to_string();
+    // Stop anything the command left running in the background, then give the readers a moment.
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{}", child.id())])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let mut text = String::from_utf8_lossy(&take(&out)).to_string();
+    let err = String::from_utf8_lossy(&take(&err)).to_string();
     if !err.trim().is_empty() {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
@@ -266,6 +287,20 @@ mod tests {
         // Refused (macOS) or written to a throwaway view of the disk (bubblewrap); never real.
         let _ = run(kind, &folder, "echo nope > ../outside.txt").unwrap();
         assert!(!base.join("outside.txt").exists());
+        // A program left running in the background is stopped, and doesn't hold things up.
+        let started = Instant::now();
+        let (_, out) = run(
+            kind,
+            &folder,
+            "(sleep 30; echo late > late.txt) & echo started",
+        )
+        .unwrap();
+        assert!(out.contains("started"), "{out}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "waited for the background program"
+        );
+        std::thread::sleep(Duration::from_secs(1));
         // Code can't reach other apps or the desktop session.
         if kind == Kind::MacOs {
             for cmd in [

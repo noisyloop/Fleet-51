@@ -134,7 +134,10 @@ async fn guard(State(d): D, req: Request, next: Next) -> Response {
              form-action 'none'; frame-ancestors 'none'",
         ),
     );
-    h.insert(header::X_FRAME_OPTIONS, header::HeaderValue::from_static("DENY"));
+    h.insert(
+        header::X_FRAME_OPTIONS,
+        header::HeaderValue::from_static("DENY"),
+    );
     h.insert(
         header::X_CONTENT_TYPE_OPTIONS,
         header::HeaderValue::from_static("nosniff"),

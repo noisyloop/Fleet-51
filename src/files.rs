@@ -4,7 +4,7 @@
 //! to them for the bot to read. Images are passed to models that can see.
 
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -109,6 +109,14 @@ fn write_new(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// The bot's folder as a confined handle (see agent::folder).
+fn folder_dir(folder: &Path) -> Result<cap_std::fs::Dir> {
+    Ok(cap_std::fs::Dir::open_ambient_dir(
+        folder,
+        cap_std::ambient_authority(),
+    )?)
+}
+
 /// Add a file to a bot's folder. `exe` is this program, used to read documents in the sandbox.
 pub fn add(folder: &Path, exe: &Path, name: &str, data: &[u8]) -> Result<Added> {
     if data.len() > MAX_BYTES {
@@ -117,7 +125,13 @@ pub fn add(folder: &Path, exe: &Path, name: &str, data: &[u8]) -> Result<Added> 
     let folder = folder.canonicalize()?;
     let name = free_name(&folder, &clean_name(name));
     let kind = kind_of(&name, data);
-    write_new(&folder.join(&name), data)?;
+    folder_dir(&folder)?
+        .open_with(
+            &name,
+            cap_std::fs::OpenOptions::new().write(true).create_new(true),
+        )
+        .with_context(|| format!("saving {name}"))?
+        .write_all(data)?;
     let mut added = Added {
         name: name.clone(),
         kind,
@@ -201,11 +215,14 @@ fn docx_text(data: &[u8]) -> Result<String> {
 /// The image files among `names` in `folder`, as data: URLs a vision model can take.
 pub fn image_urls(folder: &Path, names: &[String]) -> Vec<String> {
     use base64_lite::encode;
+    let Ok(dir) = folder_dir(folder) else {
+        return vec![];
+    };
     names
         .iter()
         .filter_map(|n| {
-            let p: PathBuf = folder.join(clean_name(n));
-            let data = std::fs::read(&p)
+            let data = dir
+                .read(clean_name(n))
                 .ok()
                 .filter(|d| d.len() <= 20 * 1024 * 1024)?;
             if kind_of(n, &data) != Kind::Image {

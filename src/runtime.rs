@@ -231,7 +231,10 @@ pub fn memory_gb() -> Option<u64> {
             .args(["-n", "hw.memsize"])
             .output()
             .ok()?;
-        String::from_utf8_lossy(&out.stdout).trim().parse::<u64>().ok()?
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<u64>()
+            .ok()?
     } else {
         let info = std::fs::read_to_string("/proc/meminfo").ok()?;
         let kb = info
