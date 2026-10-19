@@ -369,7 +369,7 @@ function renderSetup() {
   const eng = $('#step-engine');
   eng.classList.toggle('done', ready);
   eng.classList.toggle('fail', runtime.state === 'failed');
-  const sub = { checking: 'Looking for Ollama…', downloading: `Downloading Ollama ${runtime.total ? Math.round(runtime.completed / 1e6) + ' of ' + Math.round(runtime.total / 1e6) + ' MB' : ''}`, starting: 'Starting…', ready: runtime.source === 'system' ? 'Using the Ollama already on this computer' : 'Ready', failed: runtime.message }[runtime.state] || '';
+  const sub = { checking: 'Looking for Ollama…', downloading: `Downloading Ollama ${runtime.total ? Math.round(runtime.completed / 1e6) + ' of ' + Math.round(runtime.total / 1e6) + ' MB' : ''}`, starting: 'Starting Ollama (the first start can take a minute or two)…', ready: runtime.source === 'system' ? 'Using the Ollama already on this computer' : 'Ready', failed: runtime.message }[runtime.state] || '';
   $('#engine-sub').textContent = sub;
   $('#engine-bar').style.width = runtime.state === 'downloading' && runtime.total ? `${(runtime.completed * 100) / runtime.total}%` : ready ? '100%' : '0%';
   $('#setup-retry').hidden = runtime.state !== 'failed' && !(firstPull && firstPull.error);

@@ -173,7 +173,8 @@ pub fn ensure(home: &Home, report: &dyn Fn(Runtime)) -> Result<Option<Child>> {
     report(Runtime::Starting);
     std::fs::create_dir_all(home.root.join("runtime"))?;
     let log = std::fs::File::create(home.root.join("runtime").join("ollama.log"))?;
-    let child = Command::new(&bin)
+    let log_path = home.root.join("runtime").join("ollama.log");
+    let mut child = Command::new(&bin)
         .arg("serve")
         .env("OLLAMA_HOST", MANAGED_ADDR)
         .stdin(Stdio::null())
@@ -181,8 +182,9 @@ pub fn ensure(home: &Home, report: &dyn Fn(Runtime)) -> Result<Option<Child>> {
         .stderr(log)
         .spawn()
         .with_context(|| format!("starting {}", bin.display()))?;
+    // The first start of a freshly downloaded Ollama can take minutes while macOS checks it.
     let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(30) {
+    while started.elapsed() < START_TIMEOUT {
         if reachable(&managed) {
             settle(home, &managed);
             report(Runtime::Ready {
@@ -191,10 +193,33 @@ pub fn ensure(home: &Home, report: &dyn Fn(Runtime)) -> Result<Option<Child>> {
             });
             return Ok(Some(child));
         }
-        std::thread::sleep(Duration::from_millis(300));
+        if let Ok(Some(status)) = child.try_wait() {
+            bail!(
+                "Ollama stopped while starting ({status}): {}",
+                log_tail(&log_path)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
+    let _ = child.kill();
+    let _ = child.wait();
     bail!(
-        "Ollama did not start; see {}",
-        home.root.join("runtime/ollama.log").display()
+        "Ollama did not start within {} seconds: {}",
+        START_TIMEOUT.as_secs(),
+        log_tail(&log_path)
     )
+}
+
+const START_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The end of Ollama's log, to say why it did not start.
+fn log_tail(path: &std::path::Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(3)..].join(" | ");
+    if tail.is_empty() {
+        format!("no output (see {})", path.display())
+    } else {
+        format!("{tail} (see {})", path.display())
+    }
 }
