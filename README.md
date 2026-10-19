@@ -7,6 +7,11 @@ Create a bot, give it a name and a face, pick a free model, and chat. Run as man
 
 <p align="center"><a href="https://github.com/noisyloop/Fleet-51/releases/latest/download/Fleet-51-macos.dmg"><b>Download for Mac</b></a> · Apple Silicon and Intel · free and open source</p>
 
+**Why local bots?** Your chats, files and automations never leave your Mac. There's no account,
+no subscription, no usage limit, and it keeps working on a plane.
+
+![Demo: creating an alien bot, chatting with its reasoning shown, a second bot, and a weekday automation](docs/screenshots/demo.gif)
+
 ![Chatting with a Fleet-51 bot, its reasoning shown above the answer](docs/screenshots/bots.png)
 
 | Create a bot | On a phone |
@@ -61,6 +66,9 @@ Create a bot, give it a name and a face, pick a free model, and chat. Run as man
    - it downloads a first model, qwen3:1.7b (about 1.4 GB);
    - it opens your first bot, **Fleet**.
 
+   The first model is small so setup is quick. Once it's running, Fleet-51 offers **qwen3:4b**
+   (2.5 GB), which is much better at files and code; any Mac with 8 GB of memory runs it.
+
 Closing the window leaves your bots running in the background. **Fleet-51 › Quit and Stop Bots**
 (⌥⌘Q) stops everything. Updating is just installing a newer `.dmg`; the new version takes over from
 the old one and keeps your bots and chats.
@@ -91,8 +99,12 @@ scripts/smoke.sh                # end-to-end test against a stand-in Ollama
 | `ui/` | The chat app (no build step), shown in the Mac app's window or any browser |
 | `packaging/macos/` | The native Mac app and `.dmg` packaging, built by GitHub Actions |
 
-Fleet-51 began as a teardown of [Orca](https://github.com/stablyai/orca); the analysis is in
-[`docs/orca-teardown.md`](docs/orca-teardown.md).
+## Credits
+
+Fleet-51 began as a teardown of [Orca](https://github.com/stablyai/orca) by Stably AI (MIT
+licensed); the analysis is in [`docs/orca-teardown.md`](docs/orca-teardown.md). Fleet-51 is an
+independent implementation in Rust and Swift: it contains no Orca code. Models run through
+[Ollama](https://ollama.com) (MIT licensed).
 
 ## Automations
 
