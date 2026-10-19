@@ -1,23 +1,21 @@
-//! fleet51 daemon: one per user, generation-numbered. Starting a new generation asks the old one
-//! to suspend its sessions and exit, then resumes them, so upgrades never leave orphan daemons.
-//! Any process left behind by a crashed generation is found through the event log and reaped.
+//! fleet51 daemon: one per user, generation-numbered. It owns every bot, the model engine and
+//! model downloads. Starting a newer build hands over from the old daemon (its bots suspend and
+//! resume here), so an update never leaves an old version running.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, Notify};
 
-use crate::adapters::Cmd;
-use crate::events::{Ev, Live, Status};
+use crate::events::{Ev, Live};
 use crate::home::{kill_pid, now_ms, pid_alive, pid_belongs_to_session, short_id, Home};
-use crate::manifest::{self, Manifest};
-use crate::review;
-use crate::session::{self, Session};
-use crate::workspace::{self, RepoSpec, Workspace};
+use crate::models::Pull;
+use crate::runtime::Runtime;
+use crate::session::{self, Cmd, Session};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DaemonInfo {
@@ -33,20 +31,16 @@ pub fn read_info(home: &Home) -> Option<DaemonInfo> {
         .and_then(|t| serde_json::from_str(&t).ok())
 }
 
-pub struct Daemon {
-    pub home: Home,
-    pub generation: u64,
-    pub token: String,
-    pub url: String,
-    pub exe: PathBuf,
-    pub sessions: RwLock<HashMap<String, Arc<Session>>>,
-    pub global: broadcast::Sender<Live>,
-    pub stop: Notify,
-    /// Model downloads in progress or recently finished, by model name.
-    pub pulls: std::sync::Mutex<HashMap<String, crate::models::Pull>>,
-    /// Where local models run, and the Ollama process Fleet-51 started, if any.
-    pub runtime: std::sync::Mutex<crate::runtime::Runtime>,
-    pub ollama: std::sync::Mutex<Option<std::process::Child>>,
+/// Identifies this exact binary, so `fleet51 up` can tell an older daemon is still running.
+pub fn build_id() -> String {
+    let stamp = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{}-{stamp}", env!("CARGO_PKG_VERSION"))
 }
 
 pub const BOT_SHAPES: &[&str] = &[
@@ -66,167 +60,118 @@ fn bots_root() -> PathBuf {
         })
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct NewSession {
-    pub agent: String,
-    #[serde(default)]
-    pub workspace: Option<String>,
-    #[serde(default)]
-    pub repos: Vec<RepoSpec>,
-    #[serde(default)]
-    pub prompt: Option<String>,
-    #[serde(default)]
-    pub sandbox: Option<String>,
-    #[serde(default)]
-    pub permission: Option<String>,
-    #[serde(default)]
-    pub account: Option<String>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub group: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct Fanout {
-    pub agents: Vec<String>,
-    /// Optional: try each agent with each of these models.
-    #[serde(default)]
-    pub models: Vec<String>,
-    pub repos: Vec<RepoSpec>,
-    pub prompt: String,
-    #[serde(default = "one")]
-    pub n: usize,
-    #[serde(default)]
-    pub sandbox: Option<String>,
-    #[serde(default)]
-    pub permission: Option<String>,
-    #[serde(default)]
-    pub account: Option<String>,
-}
-
-fn one() -> usize {
-    1
+pub struct Daemon {
+    pub home: Home,
+    pub generation: u64,
+    pub token: String,
+    pub url: String,
+    pub exe: PathBuf,
+    pub sessions: RwLock<HashMap<String, Arc<Session>>>,
+    pub global: broadcast::Sender<Live>,
+    pub stop: Notify,
+    pub pulls: Mutex<HashMap<String, Pull>>,
+    pub runtime: Mutex<Runtime>,
+    pub ollama: Mutex<Option<std::process::Child>>,
 }
 
 impl Daemon {
-    pub fn manifests(&self) -> Vec<Manifest> {
-        manifest::load_all(&self.home)
-    }
-
-    pub fn manifest(&self, name: &str) -> Option<Manifest> {
-        self.manifests().into_iter().find(|m| m.name == name)
-    }
-
-    pub fn all_sessions(&self) -> Vec<Arc<Session>> {
-        let mut v: Vec<_> = self.sessions.read().unwrap().values().cloned().collect();
-        v.sort_by_key(|s| s.state().created);
+    /// Bots that have not been deleted, newest first.
+    pub fn bots(&self) -> Vec<Arc<Session>> {
+        let mut v: Vec<_> = self
+            .sessions
+            .read()
+            .unwrap()
+            .values()
+            .filter(|s| {
+                let st = s.state();
+                st.profile.is_some() && !st.archived
+            })
+            .cloned()
+            .collect();
+        v.sort_by_key(|s| std::cmp::Reverse(s.state().created));
         v
     }
 
-    pub fn session(&self, id: &str) -> Result<Arc<Session>> {
-        let all = self.sessions.read().unwrap();
-        let hits: Vec<_> = all
-            .values()
-            .filter(|s| s.id.starts_with(id))
-            .cloned()
-            .collect();
-        match hits.len() {
-            1 => Ok(hits.into_iter().next().unwrap()),
-            0 => bail!("no session {id}"),
-            _ => bail!("{id} matches several sessions"),
+    pub fn bot(&self, id: &str) -> Result<Arc<Session>> {
+        self.bots()
+            .into_iter()
+            .find(|s| s.id == id)
+            .with_context(|| format!("no bot {id}"))
+    }
+
+    /// The model new bots use: the default if installed (or nothing is), else the first installed.
+    pub fn default_model(&self) -> String {
+        let installed = crate::agent::ollama_models().unwrap_or_default();
+        let d = crate::runtime::DEFAULT_MODEL;
+        if installed.is_empty() || installed.iter().any(|m| m == d) {
+            d.to_string()
+        } else {
+            installed[0].clone()
         }
     }
 
-    pub fn workspace_of(&self, s: &Session) -> Result<Workspace> {
-        workspace::get(&self.home, &s.state().workspace)
-    }
-
-    pub fn create_session(self: &Arc<Self>, req: NewSession) -> Result<Arc<Session>> {
-        let m = self
-            .manifest(&req.agent)
-            .with_context(|| format!("unknown agent {}", req.agent))?;
-        let sandbox = req.sandbox.clone().unwrap_or_else(|| "none".into());
-        if !crate::sandbox::TIERS.contains(&sandbox.as_str()) {
-            bail!("unknown sandbox {sandbox}");
+    pub fn create_bot(
+        self: &Arc<Self>,
+        name: &str,
+        shape: &str,
+        color: &str,
+    ) -> Result<Arc<Session>> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 60 {
+            bail!("give the bot a name (up to 60 characters)");
         }
-        let title = req
-            .title
-            .clone()
-            .or_else(|| {
-                req.prompt
-                    .as_ref()
-                    .map(|p| crate::adapters::truncate(p.lines().next().unwrap_or(""), 60))
-            })
-            .unwrap_or_else(|| m.display.clone());
-        let ws = match (&req.workspace, req.repos.is_empty()) {
-            (Some(w), _) => workspace::get(&self.home, w)?,
-            (None, false) => workspace::create(&self.home, &title, &req.repos)?,
-            (None, true) => bail!("give a workspace id or at least one repo"),
+        let shape = if BOT_SHAPES.contains(&shape) {
+            shape
+        } else {
+            BOT_SHAPES[0]
         };
+        let color = if BOT_COLORS.contains(&color) {
+            color
+        } else {
+            "green"
+        };
+        let slug: String = name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || " -_".contains(c) {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let slug = slug.trim().trim_matches('.').to_string();
+        let slug = if slug.is_empty() {
+            "bot".to_string()
+        } else {
+            slug
+        };
+        let base = bots_root();
+        let mut folder = base.join(&slug);
+        let mut n = 2;
+        while folder.exists() {
+            folder = base.join(format!("{slug} {n}"));
+            n += 1;
+        }
+        std::fs::create_dir_all(&folder)?;
         let id = short_id("s");
         let s = Session::open(self.home.sessions().join(&id), &id, self.global.clone())?;
         s.emit(Ev::Created {
-            agent: m.name.clone(),
-            workspace: ws.id.clone(),
-            cwd: ws.agent_cwd().display().to_string(),
-            title,
-            sandbox,
-            permission: req.permission.clone().unwrap_or_else(|| "auto".into()),
-            account: req.account.clone(),
-            model: req.model.clone(),
-            group: req.group.clone(),
+            cwd: folder.display().to_string(),
+            title: name.into(),
+            model: Some(self.default_model()),
         });
-        if let Some(p) = req.prompt.as_deref().filter(|p| !p.trim().is_empty()) {
-            s.queue_prompt(p);
-        }
+        s.emit(Ev::Profile {
+            name: name.into(),
+            shape: shape.into(),
+            color: color.into(),
+        });
         self.sessions.write().unwrap().insert(id, s.clone());
         session::start(self.clone(), s.clone(), None);
         Ok(s)
     }
 
-    /// Fan one prompt out to several agents, each in its own fresh workspace.
-    pub fn fanout(self: &Arc<Self>, req: Fanout) -> Result<(String, Vec<Arc<Session>>)> {
-        let group = short_id("g");
-        let mut out = vec![];
-        let models: Vec<Option<String>> = if req.models.is_empty() {
-            vec![None]
-        } else {
-            req.models.iter().cloned().map(Some).collect()
-        };
-        for agent in &req.agents {
-            for model in &models {
-                for i in 0..req.n.max(1) {
-                    let who = model
-                        .as_ref()
-                        .map(|m| format!("{agent} · {m}"))
-                        .unwrap_or_else(|| agent.clone());
-                    let title = format!(
-                        "{who} #{} · {}",
-                        i + 1,
-                        crate::adapters::truncate(req.prompt.lines().next().unwrap_or(""), 40)
-                    );
-                    out.push(self.create_session(NewSession {
-                        agent: agent.clone(),
-                        model: model.clone(),
-                        repos: req.repos.clone(),
-                        prompt: Some(req.prompt.clone()),
-                        sandbox: req.sandbox.clone(),
-                        permission: req.permission.clone(),
-                        account: req.account.clone(),
-                        title: Some(title),
-                        group: Some(group.clone()),
-                        ..Default::default()
-                    })?);
-                }
-            }
-        }
-        Ok((group, out))
-    }
-
-    /// Queue a prompt; if the agent is not running, resuming it is the explicit user action.
+    /// Send a message; a bot that is not running is started again to answer it.
     pub fn prompt(self: &Arc<Self>, s: &Arc<Session>, text: &str) -> String {
         let (id, live) = s.queue_prompt(text);
         if !live && !s.is_running() {
@@ -235,67 +180,26 @@ impl Daemon {
         id
     }
 
-    pub fn stop(&self, s: &Arc<Session>) {
-        s.emit(Ev::StopRequested);
-        if !s.send(Cmd::Stop)
-            && !s.is_running()
-            && !matches!(s.state().status, Status::Exited | Status::Failed)
-        {
-            // Parked (suspended/orphaned): mark it finished so it is never auto-resumed.
-            s.emit(Ev::Exited {
-                code: None,
-                clean: true,
-            });
+    pub fn set_model(&self, s: &Arc<Session>, model: &str) -> Result<()> {
+        if !crate::models::valid_name(model) {
+            bail!("not a valid model name: {model}");
         }
-    }
-
-    pub fn resume(self: &Arc<Self>, s: &Arc<Session>) -> Result<()> {
-        if s.is_running() {
-            bail!("session is already running");
-        }
-        session::start(self.clone(), s.clone(), s.state().provider_session);
+        s.emit(Ev::ModelChanged {
+            model: model.into(),
+        });
+        s.send(Cmd::Restart);
         Ok(())
     }
 
-    pub fn feedback(self: &Arc<Self>, s: &Arc<Session>) -> Result<String> {
-        let notes: Vec<_> = s
-            .state()
-            .annotations
-            .into_iter()
-            .filter(|a| !a.sent)
-            .collect();
-        if notes.is_empty() {
-            bail!("no unsent annotations");
-        }
-        let ws = self.workspace_of(s)?;
-        let text = review::feedback_prompt(&ws, &notes);
-        let pid = self.prompt(s, &text);
-        s.emit(Ev::FeedbackSent {
-            annotations: notes.iter().map(|a| a.id.clone()).collect(),
-            prompt_id: pid.clone(),
-        });
-        Ok(pid)
+    pub fn set_think(&self, s: &Arc<Session>, think: bool) {
+        s.emit(Ev::ThinkChanged { think });
+        s.send(Cmd::Restart);
     }
 
-    pub fn merge(&self, s: &Arc<Session>) -> Result<Vec<review::MergeResult>> {
-        if s.is_running() && s.state().status == Status::Working {
-            bail!("agent is mid-turn; wait for it to finish or stop it first");
-        }
-        let ws = self.workspace_of(s)?;
-        let st = s.state();
-        let results = review::merge(
-            &ws,
-            &format!("{} ({}, Fleet-51 session {})", st.title, st.agent, st.id),
-        )?;
-        for r in &results {
-            s.emit(Ev::Merged {
-                checkout: r.checkout.clone(),
-                branch: r.branch.clone(),
-                into: r.into.clone(),
-                commit: r.commit.clone(),
-            });
-        }
-        Ok(results)
+    pub fn delete_bot(&self, s: &Arc<Session>) {
+        s.emit(Ev::Archived);
+        s.emit(Ev::StopRequested);
+        s.send(Cmd::Stop);
     }
 
     /// Start downloading a model in the background; progress goes out on the live stream.
@@ -308,7 +212,7 @@ impl Daemon {
             if pulls.get(name).is_some_and(|p| !p.done) {
                 return Ok(());
             }
-            let p = crate::models::Pull {
+            let p = Pull {
                 name: name.into(),
                 status: "starting".into(),
                 completed: 0,
@@ -322,8 +226,7 @@ impl Daemon {
         let d = self.clone();
         let name = name.to_string();
         tokio::task::spawn_blocking(move || {
-            let mut last_pct = u64::MAX;
-            let mut last_status = String::new();
+            let (mut last_pct, mut last_status) = (u64::MAX, String::new());
             let result = crate::models::pull(&name, |p| {
                 let pct = (p.completed * 100).checked_div(p.total).unwrap_or(0);
                 if pct != last_pct || p.status != last_status {
@@ -334,16 +237,14 @@ impl Daemon {
                 }
             });
             let mut pulls = d.pulls.lock().unwrap();
-            let p = pulls
-                .entry(name.clone())
-                .or_insert_with(|| crate::models::Pull {
-                    name: name.clone(),
-                    status: String::new(),
-                    completed: 0,
-                    total: 0,
-                    done: false,
-                    error: None,
-                });
+            let p = pulls.entry(name.clone()).or_insert_with(|| Pull {
+                name: name.clone(),
+                status: String::new(),
+                completed: 0,
+                total: 0,
+                done: false,
+                error: None,
+            });
             p.done = true;
             match result {
                 Ok(()) => p.status = "success".into(),
@@ -360,155 +261,44 @@ impl Daemon {
     /// Find or set up Ollama in the background, then make sure there is a model and a bot.
     pub fn start_runtime(self: Arc<Self>) {
         if std::env::var_os("FLEET51_NO_RUNTIME").is_some() {
-            *self.runtime.lock().unwrap() = crate::runtime::Runtime::Failed {
+            *self.runtime.lock().unwrap() = Runtime::Failed {
                 message: "model engine disabled (FLEET51_NO_RUNTIME)".into(),
             };
             return;
         }
         tokio::task::spawn_blocking(move || {
             let d = self.clone();
-            let report = move |r: crate::runtime::Runtime| {
+            let report = move |r: Runtime| {
                 *d.runtime.lock().unwrap() = r.clone();
                 let _ = d.global.send(Live::Runtime(r));
             };
             match crate::runtime::ensure(&self.home, &report) {
                 Ok(child) => {
                     *self.ollama.lock().unwrap() = child;
-                    let installed = crate::agent::ollama_models().unwrap_or_default();
-                    if installed.is_empty() {
+                    if crate::agent::ollama_models().unwrap_or_default().is_empty() {
                         let _ = self.pull_model(crate::runtime::DEFAULT_MODEL);
                     }
                     if self.bots().is_empty() {
-                        if let Err(e) = self.create_bot("Fleet", "cloud", "blue") {
+                        if let Err(e) = self.create_bot("Fleet", "cloud", "green") {
                             eprintln!("fleet51: could not create the first bot: {e:#}");
                         }
                     }
                 }
-                Err(e) => report(crate::runtime::Runtime::Failed {
+                Err(e) => report(Runtime::Failed {
                     message: format!("{e:#}"),
                 }),
             }
         });
     }
 
-    /// The model new bots use: the default if installed (or nothing is), else the first installed.
-    pub fn default_model(&self) -> String {
-        let installed = crate::agent::ollama_models().unwrap_or_default();
-        let d = crate::runtime::DEFAULT_MODEL;
-        if installed.is_empty() || installed.iter().any(|m| m == d) {
-            d.to_string()
-        } else {
-            installed[0].clone()
-        }
-    }
-
-    pub fn bots(&self) -> Vec<Arc<Session>> {
-        let mut v: Vec<_> = self
-            .all_sessions()
-            .into_iter()
-            .filter(|s| {
-                let st = s.state();
-                st.profile.is_some() && !st.archived
-            })
-            .collect();
-        v.sort_by_key(|s| std::cmp::Reverse(s.state().created));
-        v
-    }
-
-    /// A bot is a long-lived chat session on the local model, with its own folder.
-    pub fn create_bot(
-        self: &Arc<Self>,
-        name: &str,
-        shape: &str,
-        color: &str,
-    ) -> Result<Arc<Session>> {
-        let name = name.trim();
-        if name.is_empty() || name.len() > 60 {
-            bail!("give the bot a name (up to 60 characters)");
-        }
-        let shape = if BOT_SHAPES.contains(&shape) {
-            shape
-        } else {
-            BOT_SHAPES[0]
-        };
-        let color = if BOT_COLORS.contains(&color) {
-            color
-        } else {
-            "blue"
-        };
-        let slug: String = name
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' {
-                    c
-                } else {
-                    '-'
-                }
-            })
-            .collect();
-        let slug = slug.trim().trim_matches('.').to_string();
-        let base = bots_root();
-        let mut folder = base.join(if slug.is_empty() {
-            "bot"
-        } else {
-            slug.as_str()
-        });
-        let mut n = 2;
-        while folder.exists() {
-            folder = base.join(format!("{slug} {n}"));
-            n += 1;
-        }
-        std::fs::create_dir_all(&folder)?;
-        let s = self.create_session(NewSession {
-            agent: "bot".into(),
-            repos: vec![RepoSpec {
-                path: folder.display().to_string(),
-                kind: Some("folder".into()),
-            }],
-            title: Some(name.to_string()),
-            model: Some(self.default_model()),
-            permission: Some("auto".into()),
-            ..Default::default()
-        })?;
-        s.emit(Ev::Profile {
-            name: name.into(),
-            shape: shape.into(),
-            color: color.into(),
-        });
-        Ok(s)
-    }
-
-    /// Switch a bot's model. A running agent restarts on the new model and keeps its conversation.
-    pub async fn set_model(self: &Arc<Self>, s: &Arc<Session>, model: &str) -> Result<()> {
-        if !crate::models::valid_name(model) {
-            bail!("not a valid model name: {model}");
-        }
-        s.emit(Ev::ModelChanged {
-            model: model.into(),
-        });
-        if s.is_running() {
-            s.send(Cmd::Suspend);
-            for _ in 0..100 {
-                if !s.is_running() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            session::start(self.clone(), s.clone(), s.state().provider_session);
-        }
-        Ok(())
-    }
-
-    pub fn archive(&self, s: &Arc<Session>) {
-        s.emit(Ev::Archived);
-        self.stop(s);
-    }
-
     pub async fn suspend_all(&self) {
         let running: Vec<_> = self
-            .all_sessions()
-            .into_iter()
+            .sessions
+            .read()
+            .unwrap()
+            .values()
             .filter(|s| s.is_running())
+            .cloned()
             .collect();
         for s in &running {
             s.send(Cmd::Suspend);
@@ -586,42 +376,38 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
         sessions: RwLock::new(HashMap::new()),
         global,
         stop: Notify::new(),
-        pulls: std::sync::Mutex::new(HashMap::new()),
-        runtime: std::sync::Mutex::new(crate::runtime::Runtime::Checking),
-        ollama: std::sync::Mutex::new(None),
+        pulls: Mutex::new(HashMap::new()),
+        runtime: Mutex::new(Runtime::Checking),
+        ollama: Mutex::new(None),
     });
 
-    // Recover sessions from their logs.
-    let mut resumed = 0;
+    // Recover bots from their logs; anything that is not a bot (older developer sessions) is ignored.
     for entry in std::fs::read_dir(home.sessions())?.flatten() {
         let id = entry.file_name().to_string_lossy().to_string();
-        let s = match Session::open(entry.path(), &id, d.global.clone()) {
-            Ok(s) => s,
-            Err(_) => continue,
+        let Ok(s) = Session::open(entry.path(), &id, d.global.clone()) else {
+            continue;
         };
         let st = s.state();
+        if st.profile.is_none() || st.archived {
+            continue;
+        }
         if st.status.is_live() {
             if let Some(pid) = st
                 .pid
                 .filter(|p| pid_alive(*p) && pid_belongs_to_session(*p, &id))
             {
                 kill_pid(pid);
-                s.emit(Ev::Note {
-                    level: "warn".into(),
-                    message: format!("reaped pid {pid} left by a crashed daemon"),
-                });
             }
             s.emit(Ev::Orphaned { generation });
         }
         let auto = s.state().should_auto_resume();
         d.sessions.write().unwrap().insert(id, s.clone());
         if auto {
-            resumed += 1;
             session::start(d.clone(), s.clone(), st.provider_session.clone());
         }
     }
 
-    // Only one generation may run: exit if a newer one has taken over the lock file.
+    // Only one generation may run: exit if a newer one has taken over.
     {
         let d = d.clone();
         tokio::spawn(async move {
@@ -637,10 +423,7 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
     }
 
     println!("Fleet-51 daemon generation {generation} listening on {url}");
-    println!("Web UI: {url}/?token={token}");
-    if resumed > 0 {
-        println!("Resumed {resumed} interrupted session(s)");
-    }
+    println!("Open: {url}/?token={token}");
     d.clone().start_runtime();
     let app = crate::server::router(d.clone());
     let d2 = d.clone();

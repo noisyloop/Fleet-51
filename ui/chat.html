@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Fleet-51</title>
-  <meta name="theme-color" content="#0c0c0d">
+  <meta name="theme-color" content="#070b09">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/chat.css">
@@ -13,10 +13,10 @@
   <div class="app" id="app">
     <aside class="side" aria-label="Bots">
       <div class="side-top">
+        <span class="brand"><img src="/icon.svg" alt="" width="28" height="28"> Fleet-51</span>
         <div class="search-wrap" id="search-wrap" hidden>
           <input id="search" type="search" placeholder="Search bots" aria-label="Search bots">
         </div>
-        <span class="spacer"></span>
         <button class="round" id="btn-search" aria-label="Search bots" title="Search">
           <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
@@ -27,7 +27,6 @@
       <nav class="bots" id="bots"></nav>
       <div class="side-bottom">
         <button class="pill" id="btn-models">Models</button>
-        <a class="pill ghost" href="/advanced" title="Repos, diffs, fan-out and accounts">Advanced</a>
       </div>
     </aside>
 
@@ -41,11 +40,13 @@
         <label class="model-pick" title="Model this bot uses">
           <select id="model-select" aria-label="Model"></select>
         </label>
+        <button class="pill small" id="btn-think" aria-pressed="true" hidden>Think: on</button>
         <span class="spacer"></span>
         <button class="round" id="btn-menu" aria-label="Bot options" aria-haspopup="true">
           <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="5" cy="12" r="1.8" fill="currentColor"/><circle cx="12" cy="12" r="1.8" fill="currentColor"/><circle cx="19" cy="12" r="1.8" fill="currentColor"/></svg>
         </button>
         <div class="menu" id="menu" hidden>
+          <button id="menu-window">Open in new window</button>
           <button id="menu-folder">Show files</button>
           <button id="menu-delete" class="danger">Delete bot</button>
         </div>

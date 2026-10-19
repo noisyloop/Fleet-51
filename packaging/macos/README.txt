@@ -1,6 +1,8 @@
 Fleet-51 for macOS
 ==================
 
+Your own fleet of alien AI bots, running privately on this computer.
+
 1. Drag Fleet-51 into Applications.
 
 2. First launch: this build is not signed by Apple, so macOS will block a
@@ -8,21 +10,17 @@ Fleet-51 for macOS
 
      xattr -dr com.apple.quarantine /Applications/Fleet-51.app
 
-3. Open Fleet-51. It opens in its own window and starts the background daemon
-   that runs your agents. Closing the window leaves agents running; use
-   Fleet-51 > Quit and Stop Agents (Option-Command-Q) to stop everything.
-   View > Open in Browser shows the same UI in a browser tab, e.g. to use it
-   from another device.
+3. Open Fleet-51. The first launch sets everything up: it uses Ollama if you have
+   it, otherwise downloads Ollama (~175 MB, checked against a SHA-256 built into
+   Fleet-51), downloads a first model (qwen3:1.7b, ~1.4 GB), and opens your first
+   bot.
 
-First launch sets everything up: it downloads the model engine (Ollama, ~175 MB,
-checked against a SHA-256 built into Fleet-51) and a first model (qwen3:1.7b,
-~1.4 GB), then opens your first bot. If you already run Ollama, that is used.
-Get more free models from the model menu in a chat, or the Models button.
+Create more bots with +. Pick each bot's model at the top of its chat, and get
+more free models from the Models button. File > New Window (Shift-Command-N) or a
+bot's "Open in new window" gives you several chats side by side.
 
-Command line (optional):
+Closing the window leaves bots running. Fleet-51 > Quit and Stop Bots
+(Option-Command-Q) stops everything.
 
-  sudo ln -sf /Applications/Fleet-51.app/Contents/Resources/fleet51 /usr/local/bin/fleet51
-  fleet51 run ollama --model qwen3:1.7b --repo ~/code/my-app -p "fix the failing test" --wait
-
-Stop the daemon:  fleet51 down   (or Fleet-51 > Quit and Stop Agents)
-Data and logs:    ~/.fleet51
+Bots' files:  ~/Fleet-51/<bot name>
+App data:     ~/.fleet51

@@ -20,7 +20,7 @@ const store = {
 };
 
 // ---- avatars --------------------------------------------------------------
-const COLORS = { white: '#f2f2f2', brown: '#a8743f', red: '#f0283a', orange: '#ff6a13', amber: '#f59e0b', green: '#16c172', teal: '#14b8a6', blue: '#1a84ff', purple: '#8b5cf6', pink: '#f23aa0', gray: '#8a8a8a' };
+const COLORS = { white: '#f2f2f2', brown: '#a8743f', red: '#f0283a', orange: '#ff6a13', amber: '#f59e0b', green: '#3ddc68', teal: '#14b8a6', blue: '#1a84ff', purple: '#8b5cf6', pink: '#f23aa0', gray: '#8a8a8a' };
 // Each shape is a polar outline r(θ) on a 100×100 box, or a superellipse.
 const SHAPES = {
   circle: (t) => 40,
@@ -73,10 +73,11 @@ function avatar(shape, color, size = 48) {
   path.setAttribute('d', 'M' + outline(shape).map((p) => p.map((v) => v.toFixed(1)).join(' ')).join('L') + 'Z');
   path.setAttribute('fill', COLORS[color] || COLORS.blue);
   svg.append(path);
-  for (const [x, rot] of [[42, -12], [56, -8]]) {
-    const eye = document.createElementNS(NS, 'rect');
-    Object.entries({ x: x - 3.5, y: 36, width: 7, height: 15, rx: 3.5, fill: 'rgba(0,0,0,.78)', transform: `rotate(${rot} ${x} 43)` }).forEach(([k, v]) => eye.setAttribute(k, v));
-    svg.append(eye);
+  // Alien eyes: big, dark and slanted, with a small highlight.
+  const set = (node, attrs) => { Object.entries(attrs).forEach(([k, v]) => node.setAttribute(k, v)); svg.append(node); };
+  for (const [x, rot] of [[38, -32], [62, 32]]) {
+    set(document.createElementNS(NS, 'ellipse'), { cx: x, cy: 50, rx: 8.5, ry: 13, transform: `rotate(${rot} ${x} 50)`, fill: '#06120a' });
+    set(document.createElementNS(NS, 'ellipse'), { cx: x - 2.5, cy: 45, rx: 2.2, ry: 3.2, transform: `rotate(${rot} ${x} 50)`, fill: 'rgba(255,255,255,.8)' });
   }
   return svg;
 }
@@ -98,7 +99,8 @@ function showGate() {
 
 // ---- state -------------------------------------------------------------------
 let bots = [];
-let current = store.get('bot', null);
+// A window opened for one bot ("Open in new window") starts on that bot.
+let current = new URLSearchParams(location.search).get('bot') || store.get('bot', null);
 let installed = [];
 let suggested = [];
 const pulls = new Map();
@@ -146,7 +148,7 @@ async function select(id, open = true) {
   const b = bot();
   if (!b) return;
   try {
-    for (const e of await api(`/api/sessions/${id}/history?since=0`)) render(e);
+    for (const e of await api(`/api/bots/${id}/messages?since=0`)) render(e);
   } catch (e) { toast(e.message); }
   if (!$('#msgs').children.length) hello(b);
   updateTyping();
@@ -157,7 +159,18 @@ function hello(b) {
   $('#msgs').append(el('div', { class: 'hello' }, el('div', { class: 'big-avatar' }, avatar(b.shape, b.color, 120)), el('div', { text: `Hi, I'm ${b.name}. Ask me anything.` }), el('div', { class: 'muted', text: `Running ${b.model || 'a local model'} on this computer` })));
 }
 
+function renderThink() {
+  const b = bot();
+  const t = $('#btn-think');
+  t.hidden = !b;
+  if (!b) return;
+  t.setAttribute('aria-pressed', String(!!b.think));
+  t.textContent = b.think ? 'Think: on' : 'Think: off';
+  t.title = b.think ? 'The model reasons before answering (shown in the chat). Slower.' : 'Faster replies without reasoning.';
+}
+
 function renderHead() {
+  renderThink();
   const b = bot();
   $('#head-avatar').replaceChildren(b ? avatar(b.shape, b.color, 30) : '');
   $('#head-name').textContent = b ? b.name : '';
@@ -235,6 +248,7 @@ function render(e) {
       scrollDown(true);
       break;
     }
+    case 'reasoning': add(el('details', { class: 'm-reason' }, el('summary', { text: 'Reasoning' }), el('div', { class: 'm-reason-body', text: e.text }))); break;
     case 'text': add(el('div', { class: 'm-bot' }, markdown(e.text))); break;
     case 'tool_call': {
       const a = e.input || {};
@@ -245,6 +259,7 @@ function render(e) {
     case 'turn_done': if (!e.ok && e.summary) add(el('div', { class: 'm-error', text: friendlyError(e.summary) })); break;
     case 'note': if (e.level === 'error' || e.level === 'warn') add(el('div', { class: 'm-error', text: e.message })); break;
     case 'model_changed': add(el('div', { class: 'm-sys', text: `Switched to ${e.model}` })); break;
+    case 'think_changed': add(el('div', { class: 'm-sys', text: e.think ? 'Thinking on: replies show their reasoning' : 'Thinking off: faster replies' })); break;
   }
 }
 function friendlyError(msg) {
@@ -273,17 +288,17 @@ async function send(ev) {
   if (!text || !b) return;
   $('#input').value = '';
   autosize();
-  try { await api(`/api/sessions/${b.id}/prompt`, { text }); } catch (e) { toast(e.message); $('#input').value = text; }
+  try { await api(`/api/bots/${b.id}/messages`, { text }); } catch (e) { toast(e.message); $('#input').value = text; }
 }
 function autosize() { const t = $('#input'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 200) + 'px'; }
 
 // ---- new bot ---------------------------------------------------------------------
 let shapes = Object.keys(SHAPES);
 let colorNames = Object.keys(COLORS);
-const nb = { shape: 'cloud', color: 'blue' };
+const nb = { shape: 'cloud', color: 'green' };
 function openNewBot() {
   nb.shape = shapes[Math.floor(Math.random() * shapes.length)];
-  nb.color = colorNames.filter((c) => c !== 'white' && c !== 'gray')[Math.floor(Math.random() * 9)];
+  nb.color = 'green';
   $('#nb-name').value = '';
   drawNewBot();
   $('#new-bot').showModal();
@@ -350,7 +365,7 @@ function renderSetup() {
   const show = !ready || needModel;
   $('#setup').hidden = !show;
   if (!show) return;
-  $('#setup-avatar').replaceChildren(avatar('cloud', 'blue', 96));
+  $('#setup-avatar').replaceChildren(el('img', { src: '/icon.svg', alt: '', width: 96, height: 96 }));
   const eng = $('#step-engine');
   eng.classList.toggle('done', ready);
   eng.classList.toggle('fail', runtime.state === 'failed');
@@ -375,11 +390,15 @@ async function refresh() {
 function onState(s) {
   const b = bots.find((x) => x.id === s.id);
   if (!s.profile || s.archived) { if (b && s.archived) refresh(); return; }
-  const next = { id: s.id, name: s.profile.name, shape: s.profile.shape, color: s.profile.color, model: s.model, folder: s.cwd, status: s.status, preview: s.last_text, pending: s.pending.length, updated: s.updated, created: s.created };
+  const next = { id: s.id, name: s.profile.name, shape: s.profile.shape, color: s.profile.color, model: s.model, think: s.think, folder: s.cwd, status: s.status, preview: s.last_text, pending: s.pending.length, updated: s.updated, created: s.created };
   if (b) Object.assign(b, next); else bots.push(next);
   renderBots();
-  if (s.id === current) { updateTyping(); if (b && b.model !== next.model) renderModelSelect(); }
+  if (s.id === current) { updateTyping(); renderThink(); if (b && b.model !== next.model) renderModelSelect(); }
 }
+
+// Older versions installed a caching service worker that could show the old interface.
+if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
+if (window.caches) caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))).catch(() => {});
 
 async function boot() {
   if (!token) return showGate();
@@ -404,7 +423,7 @@ async function boot() {
     }
     if (msg.kind === 'state') onState(msg);
   };
-  es.onopen = () => { refresh().catch(() => {}); if (current) api(`/api/sessions/${current}/history?since=${lastSeq}`).then((evs) => evs.forEach(render)).catch(() => {}); };
+  es.onopen = () => { refresh().catch(() => {}); if (current) api(`/api/bots/${current}/messages?since=${lastSeq}`).then((evs) => evs.forEach(render)).catch(() => {}); };
 }
 
 // ---- wiring -----------------------------------------------------------------------------------
@@ -420,7 +439,13 @@ $('#search').oninput = renderBots;
 $('#btn-models').onclick = () => { $('#models-dlg').showModal(); loadModels().then(renderModelsDialog); renderModelsDialog(); };
 $('#btn-back').onclick = () => document.getElementById('app').classList.remove('in-chat');
 $('#btn-menu').onclick = () => { $('#menu').hidden = !$('#menu').hidden; };
-document.addEventListener('click', (e) => { if (!e.target.closest('#menu, #btn-menu')) $('#menu').hidden = true; });
+document.addEventListener('click', (e) => { if (!e.target.closest('#btn-menu') && (!e.target.closest('#menu') || e.target.closest('#menu button'))) $('#menu').hidden = true; });
+$('#btn-think').onclick = async () => {
+  const b = bot();
+  if (!b) return;
+  try { Object.assign(b, await api(`/api/bots/${b.id}/think`, { think: !b.think })); renderThink(); } catch (e) { toast(e.message); }
+};
+$('#menu-window').onclick = () => { const b = bot(); if (b) window.open(`/?bot=${encodeURIComponent(b.id)}`, '_blank'); };
 $('#menu-folder').onclick = () => { const b = bot(); if (b) api(`/api/bots/${b.id}/reveal`, {}).catch((e) => toast(e.message)); };
 $('#menu-delete').onclick = async () => {
   const b = bot();

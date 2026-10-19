@@ -1,12 +1,13 @@
-//! `fleet51 agent`: a small built-in coding agent for any OpenAI-compatible model server
-//! (Ollama, LM Studio, vLLM, llama.cpp server, OpenRouter...). It speaks Claude's stream-json
-//! protocol on stdio, so Fleet-51 drives it exactly like Claude Code: acknowledged prompts,
-//! resumable sessions, tool events, usage. Tools are confined to the working directory.
+//! `fleet51 agent`: the bot behind each chat. It talks to a local Ollama model and speaks a small
+//! JSON-lines protocol on stdio (Claude Code's stream-json shape), so the daemon gets explicit
+//! prompt acknowledgements, resumable sessions, reasoning, tool events and token usage.
+//!
+//! A bot can only touch files inside its own folder: there is no shell tool, and every path is
+//! resolved (following symlinks) and checked against the folder before use.
 
-use std::io::{BufRead, Read, Write};
-use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::io::{BufRead, Write};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -14,20 +15,14 @@ use serde_json::{json, Value};
 const MAX_TOOL_OUTPUT: usize = 8000;
 
 pub struct Opts {
-    pub provider: String,
-    pub base_url: Option<String>,
     pub model: Option<String>,
     pub resume: Option<String>,
-    pub permission: String,
     pub state_dir: Option<PathBuf>,
-    pub replay: bool,
     pub max_steps: usize,
-    /// Let reasoning models think before answering (much slower on small local hardware).
+    /// Let reasoning models think before answering; the reasoning is shown in the chat.
     pub think: bool,
     /// native | text | auto (native, falling back to text for models without tool calling)
     pub tool_mode: String,
-    /// coder (works on a project) or assistant (a general chat bot with its own folder)
-    pub persona: String,
 }
 
 fn out(v: Value) {
@@ -36,7 +31,7 @@ fn out(v: Value) {
     let _ = o.flush();
 }
 
-/// Ollama's own OLLAMA_HOST convention: "host:port" or a full URL.
+/// The Ollama the daemon settled on, else Ollama's own OLLAMA_HOST convention.
 pub fn ollama_root() -> String {
     if let Some(root) = crate::runtime::root() {
         return root;
@@ -53,7 +48,7 @@ pub fn ollama_root() -> String {
 pub fn ollama_models() -> Result<Vec<String>> {
     let mut resp = ureq::get(&format!("{}/api/tags", ollama_root()))
         .call()
-        .context("cannot reach Ollama (is `ollama serve` running?)")?;
+        .context("the model engine is not running yet")?;
     let v: Value = resp.body_mut().read_json()?;
     Ok(v["models"]
         .as_array()
@@ -63,131 +58,79 @@ pub fn ollama_models() -> Result<Vec<String>> {
         .collect())
 }
 
-struct Endpoint {
-    url: String,
-    key: Option<String>,
-    model: String,
-    no_think: bool,
-}
-
-fn endpoint(o: &Opts) -> Result<Endpoint> {
-    let (base, key) = match o.provider.as_str() {
-        "ollama" => (
-            o.base_url
-                .clone()
-                .unwrap_or_else(|| format!("{}/v1", ollama_root())),
-            None,
-        ),
-        "openai" => (
-            o.base_url
-                .clone()
-                .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
-                .unwrap_or_else(|| "https://api.openai.com/v1".into()),
-            std::env::var("OPENAI_API_KEY").ok(),
-        ),
-        other => bail!("unknown provider {other} (use ollama or openai)"),
-    };
-    let model = match o.model.clone().filter(|m| !m.is_empty()) {
-        Some(m) => m,
-        None if o.provider == "ollama" => ollama_models()?.into_iter().next().ok_or_else(|| {
-            anyhow!("Ollama has no models yet; pull one, e.g. `ollama pull qwen3`")
-        })?,
-        None => bail!("pass a model (fleet51 run ... --model <name>)"),
-    };
-    Ok(Endpoint {
-        url: format!("{}/chat/completions", base.trim_end_matches('/')),
-        key,
-        model,
-        // Ollama maps reasoning_effort "none" to think=false; other servers may reject it.
-        no_think: o.provider == "ollama" && !o.think,
-    })
-}
-
-fn tools(permission: &str) -> Value {
+fn tools() -> Value {
     let f = |name: &str, desc: &str, props: Value, req: &[&str]| {
         json!({"type": "function", "function": {"name": name, "description": desc,
             "parameters": {"type": "object", "properties": props, "required": req}}})
     };
-    let mut t = vec![
+    json!([
         f(
             "list_files",
-            "List files under a directory (default: the project root).",
+            "List files in your folder (or a subfolder).",
             json!({"path": {"type": "string"}}),
-            &[],
+            &[]
         ),
         f(
             "read_file",
-            "Read a text file. Optional 1-based line range.",
-            json!({"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}),
-            &["path"],
+            "Read a text file from your folder.",
+            json!({"path": {"type": "string"}}),
+            &["path"]
         ),
         f(
             "search",
-            "Search file contents for a regular expression; returns file:line matches.",
+            "Search the files in your folder for a regular expression.",
             json!({"pattern": {"type": "string"}}),
-            &["pattern"],
+            &["pattern"]
         ),
-    ];
-    if permission != "plan" {
-        t.push(f(
+        f(
             "write_file",
-            "Create or overwrite a file with the given content.",
+            "Create or overwrite a file in your folder.",
             json!({"path": {"type": "string"}, "content": {"type": "string"}}),
-            &["path", "content"],
-        ));
-        t.push(f("edit_file", "Replace one exact occurrence of old_text with new_text in a file.", json!({"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}), &["path", "old_text", "new_text"]));
-        t.push(f(
-            "run_command",
-            "Run a shell command in the project root (120s limit) and return its output.",
-            json!({"command": {"type": "string"}}),
-            &["command"],
-        ));
-    }
-    json!(t)
+            &["path", "content"]
+        ),
+        f(
+            "edit_file",
+            "Replace one exact occurrence of old_text with new_text in a file.",
+            json!({"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}}),
+            &["path", "old_text", "new_text"]
+        ),
+    ])
 }
 
-fn system_prompt(permission: &str, persona: &str) -> String {
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    if persona == "assistant" {
-        return format!(
-            "You are a helpful assistant running privately on the user's own computer. You have a \
-             working folder at {cwd} with tools to read, create and edit files and run commands in it. \
-             Use the tools only when a request needs them; for ordinary questions and conversation, \
-             just answer. Be clear and concise."
-        );
-    }
-    let mode = if permission == "plan" {
-        "You are in read-only planning mode: inspect the code and propose a plan; do not change files."
-    } else {
-        "Make the change directly with the tools, then verify it if there is a way to (tests, build, running it)."
-    };
-    format!(
-        "You are a coding agent working in the project at {cwd}. Use the tools to look at files before \
-         changing them. All paths are relative to the project root. {mode} When you are finished, reply \
-         with a short summary of what you did and stop calling tools."
-    )
-}
+const SYSTEM_PROMPT: &str =
+    "You are a helpful assistant running privately on the user's own computer. \
+You have a folder of your own and tools to list, read, search, create and edit files in it; you \
+cannot touch anything outside it or run programs. Use the tools only when a request needs them; \
+for ordinary questions and conversation, just answer. Be clear and concise.";
 
-/// Resolve a model-supplied path inside the project root; refuse anything that escapes it.
-fn safe_path(p: &str) -> Result<PathBuf> {
-    let rel = Path::new(p.trim_start_matches("./"));
+/// Resolve a model-supplied path inside `root`, following symlinks, and refuse anything outside.
+fn safe_path(root: &Path, p: &str) -> Result<PathBuf> {
+    let p = p.trim();
+    let rel = Path::new(p).strip_prefix(root).unwrap_or(Path::new(p));
     if rel.is_absolute() {
-        let cwd = std::env::current_dir()?;
-        return rel
-            .strip_prefix(&cwd)
-            .map(|r| r.to_path_buf())
-            .map_err(|_| anyhow!("{p} is outside the project"));
+        bail!("{p} is outside your folder");
     }
-    if rel.components().any(|c| matches!(c, Component::ParentDir)) {
-        bail!("{p} is outside the project");
+    let joined = root.join(rel);
+    // The deepest part of the path that exists decides where it really points.
+    let mut existing = joined.as_path();
+    let mut rest = Vec::new();
+    while !existing.exists() {
+        rest.push(
+            existing
+                .file_name()
+                .ok_or_else(|| anyhow!("{p} is outside your folder"))?
+                .to_owned(),
+        );
+        existing = existing.parent().ok_or_else(|| anyhow!("bad path {p}"))?;
     }
-    Ok(if rel.as_os_str().is_empty() {
-        PathBuf::from(".")
-    } else {
-        rel.to_path_buf()
-    })
+    let mut real = existing.canonicalize()?;
+    for part in rest.iter().rev() {
+        real.push(part);
+    }
+    if !real.starts_with(root) {
+        bail!("{p} is outside your folder");
+    }
+    Ok(real)
 }
 
 fn clip(s: String) -> String {
@@ -201,7 +144,7 @@ fn clip(s: String) -> String {
     format!("{}\n… [truncated {} bytes]", &s[..cut], s.len() - cut)
 }
 
-fn walk(dir: &Path, out: &mut Vec<String>) {
+fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
@@ -211,73 +154,53 @@ fn walk(dir: &Path, out: &mut Vec<String>) {
         if out.len() >= 400 {
             return;
         }
-        let name = e.file_name().to_string_lossy().to_string();
-        if matches!(
-            name.as_str(),
-            ".git" | "target" | "node_modules" | ".venv" | "dist" | "build"
-        ) {
+        let path = e.path();
+        // Never follow links out of the folder while listing; skip hidden files.
+        if path.is_symlink() || e.file_name().to_string_lossy().starts_with('.') {
             continue;
         }
-        let path = e.path();
         let shown = path
-            .strip_prefix(".")
+            .strip_prefix(root)
             .unwrap_or(&path)
             .display()
             .to_string();
         if path.is_dir() {
             out.push(format!("{shown}/"));
-            walk(&path, out);
+            walk(root, &path, out);
         } else {
             out.push(shown);
         }
     }
 }
 
-fn run_tool(name: &str, a: &Value, permission: &str) -> Result<String> {
+fn run_tool(root: &Path, name: &str, a: &Value) -> Result<String> {
     let s = |k: &str| {
         a[k].as_str()
             .map(str::to_string)
             .ok_or_else(|| anyhow!("missing argument {k}"))
     };
-    let writes = matches!(name, "write_file" | "edit_file" | "run_command");
-    if writes && permission == "plan" {
-        bail!("{name} is not allowed in plan mode");
-    }
     match name {
         "list_files" => {
-            let p = safe_path(a["path"].as_str().unwrap_or("."))?;
+            let p = safe_path(root, a["path"].as_str().unwrap_or(""))?;
             let mut v = vec![];
-            walk(&p, &mut v);
+            walk(root, &p, &mut v);
             Ok(if v.is_empty() {
                 "(empty)".into()
             } else {
                 v.join("\n")
             })
         }
-        "read_file" => {
-            let text = std::fs::read_to_string(safe_path(&s("path")?)?)?;
-            let start = a["start_line"].as_u64().unwrap_or(1).max(1) as usize;
-            let end = a["end_line"]
-                .as_u64()
-                .map(|e| e as usize)
-                .unwrap_or(usize::MAX);
-            Ok(clip(
-                text.lines()
-                    .enumerate()
-                    .skip(start - 1)
-                    .take_while(|(i, _)| *i < end)
-                    .map(|(i, l)| format!("{:>5}  {l}", i + 1))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ))
-        }
+        "read_file" => Ok(clip(std::fs::read_to_string(safe_path(
+            root,
+            &s("path")?,
+        )?)?)),
         "search" => {
             let re = regex::Regex::new(&s("pattern")?)?;
             let mut files = vec![];
-            walk(Path::new("."), &mut files);
+            walk(root, root, &mut files);
             let mut hits = vec![];
             for f in files.iter().filter(|f| !f.ends_with('/')) {
-                let Ok(text) = std::fs::read_to_string(f) else {
+                let Ok(text) = std::fs::read_to_string(root.join(f)) else {
                     continue;
                 };
                 for (i, l) in text.lines().enumerate() {
@@ -293,102 +216,56 @@ fn run_tool(name: &str, a: &Value, permission: &str) -> Result<String> {
             })
         }
         "write_file" => {
-            let p = safe_path(&s("path")?)?;
-            if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            let p = safe_path(root, &s("path")?)?;
+            if let Some(parent) = p.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             let content = s("content")?;
             std::fs::write(&p, &content)?;
-            Ok(format!("wrote {} ({} bytes)", p.display(), content.len()))
+            Ok(format!(
+                "wrote {} ({} bytes)",
+                p.strip_prefix(root).unwrap_or(&p).display(),
+                content.len()
+            ))
         }
         "edit_file" => {
-            let p = safe_path(&s("path")?)?;
+            let p = safe_path(root, &s("path")?)?;
             let text = std::fs::read_to_string(&p)?;
             let (old, new) = (s("old_text")?, s("new_text")?);
             match text.matches(&old).count() {
-                0 => bail!("old_text not found in {}", p.display()),
+                0 => bail!("old_text not found"),
                 1 => {
                     std::fs::write(&p, text.replacen(&old, &new, 1))?;
-                    Ok(format!("edited {}", p.display()))
+                    Ok("edited".into())
                 }
-                n => bail!(
-                    "old_text occurs {n} times in {}; include more context",
-                    p.display()
-                ),
+                n => bail!("old_text occurs {n} times; include more context"),
             }
         }
-        "run_command" => run_command(&s("command")?),
         other => bail!("unknown tool {other}"),
     }
 }
 
-fn run_command(cmd: &str) -> Result<String> {
-    let mut child = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let t_out = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stdout.read_to_string(&mut s);
-        s
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
-    });
-    let started = Instant::now();
-    let status = loop {
-        if let Some(st) = child.try_wait()? {
-            break Some(st);
-        }
-        if started.elapsed() > Duration::from_secs(120) {
-            let _ = child.kill();
-            let _ = child.wait();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    let (o, e) = (
-        t_out.join().unwrap_or_default(),
-        t_err.join().unwrap_or_default(),
-    );
-    let code = match status {
-        Some(st) => format!(
-            "exit code {}",
-            st.code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".into())
-        ),
-        None => "timed out after 120s".into(),
-    };
-    Ok(clip(format!("{code}\n--- stdout\n{o}\n--- stderr\n{e}")))
-}
-
-/// Small local models often wrap reasoning in <think> tags; keep only the answer.
-fn strip_think(s: &str) -> String {
-    let mut out = s.to_string();
-    while let (Some(a), Some(b)) = (out.find("<think>"), out.find("</think>")) {
+/// Split a reply into (reasoning, answer). Some models put reasoning in <think> tags.
+fn split_think(s: &str) -> (String, String) {
+    let mut answer = s.to_string();
+    let mut reasoning = Vec::new();
+    while let (Some(a), Some(b)) = (answer.find("<think>"), answer.find("</think>")) {
         if b < a {
             break;
         }
-        out.replace_range(a..b + "</think>".len(), "");
+        reasoning.push(answer[a + "<think>".len()..b].trim().to_string());
+        answer.replace_range(a..b + "</think>".len(), "");
     }
-    out.trim().to_string()
+    (reasoning.join("\n\n"), answer.trim().to_string())
 }
 
 /// For models without native tool calling: describe the tools and ask for a JSON object.
 fn text_tools_prompt(tools: &Value) -> String {
     let mut s = String::from(
         "\n\nTo use a tool, reply with ONLY one JSON object and nothing else, for example:\n\
-         {\"tool\": \"read_file\", \"args\": {\"path\": \"README.md\"}}\n\
+         {\"tool\": \"read_file\", \"args\": {\"path\": \"notes.md\"}}\n\
          You will get the result in the next message. Use one tool per reply. When you are done, \
-         reply with a short plain-text summary and no JSON.\nTools:",
+         reply in plain text with no JSON.\nTools:",
     );
     for t in tools.as_array().into_iter().flatten() {
         let f = &t["function"];
@@ -424,28 +301,24 @@ fn parse_text_call(content: &str) -> Option<(String, Value)> {
     None
 }
 
-fn chat(ep: &Endpoint, messages: &[Value], tools: Option<&Value>) -> Result<Value> {
+fn chat(model: &str, think: bool, messages: &[Value], tools: Option<&Value>) -> Result<Value> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(900)))
         .build()
         .into();
-    let mut req = agent
-        .post(&ep.url)
-        .header("Content-Type", "application/json");
-    if let Some(k) = &ep.key {
-        req = req.header("Authorization", &format!("Bearer {k}"));
-    }
-    let mut body = json!({"model": ep.model, "messages": messages, "stream": false});
+    let mut body = json!({"model": model, "messages": messages, "stream": false});
     if let Some(t) = tools {
         body["tools"] = t.clone();
     }
-    if ep.no_think {
+    if !think {
+        // Ollama maps this to think=false: replies arrive far sooner on small hardware.
         body["reasoning_effort"] = json!("none");
     }
-    let mut resp = req
+    let mut resp = agent
+        .post(&format!("{}/v1/chat/completions", ollama_root()))
         .send_json(body)
-        .with_context(|| format!("cannot reach the model server at {}", ep.url))?;
+        .context("the model engine is not running yet")?;
     let status = resp.status();
     let body: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
     if !status.is_success() {
@@ -453,7 +326,7 @@ fn chat(ep: &Endpoint, messages: &[Value], tools: Option<&Value>) -> Result<Valu
             .as_str()
             .or(body["error"].as_str())
             .unwrap_or("request failed");
-        bail!("{} {}: {msg}", status.as_u16(), ep.model);
+        bail!("{msg}");
     }
     Ok(body)
 }
@@ -467,29 +340,32 @@ fn enter_text_mode(messages: &mut [Value], tools: &Value) {
     }
 }
 
-fn state_file(o: &Opts, id: &str) -> Option<PathBuf> {
-    o.state_dir
-        .as_ref()
-        .map(|d| d.join(format!("agent-{id}.json")))
+fn say(session: &str, block: Value) {
+    out(
+        json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [block]}}),
+    );
 }
 
 pub fn run(o: Opts) -> Result<()> {
+    let root = std::env::current_dir()?.canonicalize()?;
     let session = o
         .resume
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut messages: Vec<Value> = state_file(&o, &session)
+    let state_file = o
+        .state_dir
+        .as_ref()
+        .map(|d| d.join(format!("agent-{session}.json")));
+    let mut messages: Vec<Value> = state_file
+        .as_ref()
         .and_then(|f| std::fs::read_to_string(f).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_else(|| {
-            vec![json!({"role": "system", "content": system_prompt(&o.permission, &o.persona)})]
-        });
-    let tools = tools(&o.permission);
+        .unwrap_or_else(|| vec![json!({"role": "system", "content": SYSTEM_PROMPT})]);
+    let tools = tools();
     let mut text_mode = o.tool_mode == "text";
     if text_mode {
         enter_text_mode(&mut messages, &tools);
     }
-    let mut ep: Option<Endpoint> = None;
     let mut started = false;
 
     for line in std::io::stdin().lock().lines() {
@@ -509,27 +385,31 @@ pub fn run(o: Opts) -> Result<()> {
                 .join("\n"),
             _ => continue,
         };
-        if o.replay {
-            out(
-                json!({"type": "user", "message": msg["message"], "session_id": session, "isReplay": true}),
-            );
-        }
-        if ep.is_none() {
-            match endpoint(&o) {
-                Ok(e) => ep = Some(e),
-                Err(e) => {
-                    out(
-                        json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": session, "result": e.to_string()}),
-                    );
-                    continue;
-                }
+        out(
+            json!({"type": "user", "message": msg["message"], "session_id": session, "isReplay": true}),
+        );
+        // Resolve the model per message: the engine may have come up after this process started.
+        let model = match o.model.clone().filter(|m| !m.is_empty()) {
+            Some(m) => Ok(m),
+            None => ollama_models().and_then(|m| {
+                m.into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow!("no model is downloaded yet"))
+            }),
+        };
+        let model = match model {
+            Ok(m) => m,
+            Err(e) => {
+                out(
+                    json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": session, "result": e.to_string()}),
+                );
+                continue;
             }
-        }
-        let ep = ep.as_ref().unwrap();
+        };
         if !started {
             started = true;
             out(
-                json!({"type": "system", "subtype": "init", "session_id": session, "model": ep.model, "cwd": std::env::current_dir()?}),
+                json!({"type": "system", "subtype": "init", "session_id": session, "model": model}),
             );
         }
         messages.push(json!({"role": "user", "content": text}));
@@ -537,19 +417,15 @@ pub fn run(o: Opts) -> Result<()> {
         let mut last = String::new();
         let mut error: Option<String> = None;
         for step in 0..o.max_steps {
-            let mut reply = chat(ep, &messages, (!text_mode).then_some(&tools));
+            let mut reply = chat(&model, o.think, &messages, (!text_mode).then_some(&tools));
             if let Err(e) = &reply {
                 if !text_mode
                     && o.tool_mode == "auto"
                     && e.to_string().contains("does not support tools")
                 {
-                    eprintln!(
-                        "{} has no native tool calling; switching to JSON tool calls in text",
-                        ep.model
-                    );
                     text_mode = true;
                     enter_text_mode(&mut messages, &tools);
-                    reply = chat(ep, &messages, None);
+                    reply = chat(&model, o.think, &messages, None);
                 }
             }
             let body = match reply {
@@ -562,7 +438,17 @@ pub fn run(o: Opts) -> Result<()> {
             tin += body["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
             tout += body["usage"]["completion_tokens"].as_u64().unwrap_or(0);
             let m = &body["choices"][0]["message"];
-            let content = strip_think(m["content"].as_str().unwrap_or_default());
+            let raw = m["content"].as_str().unwrap_or_default();
+            let (inline_reasoning, content) = split_think(raw);
+            let reasoning = m["reasoning"]
+                .as_str()
+                .or(m["reasoning_content"].as_str())
+                .unwrap_or(&inline_reasoning)
+                .trim()
+                .to_string();
+            if !reasoning.is_empty() {
+                say(&session, json!({"type": "thinking", "thinking": reasoning}));
+            }
             let mut calls = m["tool_calls"].as_array().cloned().unwrap_or_default();
             let text_call = if text_mode {
                 parse_text_call(&content)
@@ -574,7 +460,7 @@ pub fn run(o: Opts) -> Result<()> {
                     json!({"id": format!("call_{step}"), "function": {"name": name, "arguments": args}}),
                 ];
             }
-            // A JSON tool call is not prose; do not show it as the agent's message.
+            // A JSON tool call is not prose; do not show it as the bot's message.
             let content = if text_call.is_some() {
                 String::new()
             } else {
@@ -582,12 +468,9 @@ pub fn run(o: Opts) -> Result<()> {
             };
             if !content.is_empty() {
                 last = content.clone();
-                out(
-                    json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [{"type": "text", "text": content}]}}),
-                );
+                say(&session, json!({"type": "text", "text": content}));
             }
             if text_mode {
-                let raw = m["content"].as_str().unwrap_or_default();
                 messages.push(json!({"role": "assistant", "content": raw}));
             } else {
                 let mut assistant = json!({"role": "assistant", "content": content});
@@ -609,39 +492,33 @@ pub fn run(o: Opts) -> Result<()> {
                     Value::String(s) => serde_json::from_str(s).unwrap_or(json!({})),
                     v => v.clone(),
                 };
-                out(
-                    json!({"type": "assistant", "session_id": session, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": id, "name": name, "input": args}]}}),
+                say(
+                    &session,
+                    json!({"type": "tool_use", "id": id, "name": name, "input": args}),
                 );
-                let result =
-                    run_tool(name, &args, &o.permission).unwrap_or_else(|e| format!("error: {e}"));
-                out(
-                    json!({"type": "user", "session_id": session, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": id, "content": clip(result.clone())}]}}),
-                );
+                let result = run_tool(&root, name, &args).unwrap_or_else(|e| format!("error: {e}"));
                 if text_mode {
                     messages.push(
                         json!({"role": "user", "content": format!("Result of {name}:\n{result}")}),
                     );
                 } else {
-                    messages.push(
-                        json!({"role": "tool", "tool_call_id": id, "name": name, "content": result}),
-                    );
+                    messages.push(json!({"role": "tool", "tool_call_id": id, "name": name, "content": result}));
                 }
             }
             if step + 1 == o.max_steps {
                 last = format!("stopped after {} steps", o.max_steps);
             }
         }
-        if let Some(f) = state_file(&o, &session) {
+        if let Some(f) = &state_file {
             let _ = std::fs::write(f, serde_json::to_string(&messages).unwrap_or_default());
         }
+        let usage = json!({"input_tokens": tin, "output_tokens": tout});
         match error {
             Some(e) => out(
-                json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": session, "result": e,
-                                  "usage": {"input_tokens": tin, "output_tokens": tout}, "total_cost_usd": 0.0}),
+                json!({"type": "result", "subtype": "error_during_execution", "is_error": true, "session_id": session, "result": e, "usage": usage}),
             ),
             None => out(
-                json!({"type": "result", "subtype": "success", "is_error": false, "session_id": session, "result": last,
-                               "usage": {"input_tokens": tin, "output_tokens": tout}, "total_cost_usd": 0.0}),
+                json!({"type": "result", "subtype": "success", "is_error": false, "session_id": session, "result": last, "usage": usage}),
             ),
         }
     }
@@ -653,29 +530,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn paths_stay_inside_the_project() {
-        assert!(safe_path("../etc/passwd").is_err());
-        assert!(safe_path("/etc/passwd").is_err());
-        assert_eq!(
-            safe_path("./src/main.rs").unwrap(),
-            PathBuf::from("src/main.rs")
-        );
-        assert_eq!(safe_path("").unwrap(), PathBuf::from("."));
+    fn paths_stay_inside_the_folder_even_through_symlinks() {
+        let base = std::env::temp_dir().join(format!("fleet51-safe-{}", std::process::id()));
+        let root = base.join("bot");
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        assert!(safe_path(&root, "../etc/passwd").is_err());
+        assert!(safe_path(&root, "/etc/passwd").is_err());
+        assert!(safe_path(&root, "notes/new.md").unwrap().starts_with(&root));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc", root.join("escape")).unwrap();
+            assert!(safe_path(&root, "escape/passwd").is_err());
+            assert!(safe_path(&root, "escape/new-file").is_err());
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
     fn text_tool_calls_are_found_in_prose_and_fences() {
         let (n, a) = parse_text_call(
-            "Sure.\n```json\n{\"tool\": \"read_file\", \"args\": {\"path\": \"a.py\"}}\n```",
+            "Sure.\n```json\n{\"tool\": \"read_file\", \"args\": {\"path\": \"a.md\"}}\n```",
         )
         .unwrap();
         assert_eq!(n, "read_file");
-        assert_eq!(a["path"], "a.py");
-        assert!(parse_text_call("All done, the test passes.").is_none());
+        assert_eq!(a["path"], "a.md");
+        assert!(parse_text_call("All done.").is_none());
     }
 
     #[test]
-    fn think_blocks_are_removed() {
-        assert_eq!(strip_think("<think>hmm</think>\nDone."), "Done.");
+    fn inline_reasoning_is_split_from_the_answer() {
+        assert_eq!(
+            split_think("<think>17*3 is 51</think>\n51."),
+            ("17*3 is 51".to_string(), "51.".to_string())
+        );
     }
 }

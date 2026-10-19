@@ -1,5 +1,5 @@
-//! A session is an append-only event log. Every status, resume and replay decision is a fold
-//! over this log, so "did this exit cleanly?" and "was this prompt delivered?" have one answer.
+//! Each bot is an append-only event log. Its status, history and resume behaviour are a fold over
+//! that log, so "was this message delivered?" and "should this restart?" have one answer.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,21 +16,23 @@ pub struct Event {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Ev {
     Created {
-        agent: String,
-        workspace: String,
         cwd: String,
         title: String,
-        sandbox: String,
-        permission: String,
-        account: Option<String>,
         model: Option<String>,
-        group: Option<String>,
+    },
+    Profile {
+        name: String,
+        shape: String,
+        color: String,
+    },
+    ModelChanged {
+        model: String,
+    },
+    ThinkChanged {
+        think: bool,
     },
     Spawned {
         pid: Option<u32>,
-        protocol: String,
-        argv: Vec<String>,
-        account: Option<String>,
         generation: u64,
         resume: Option<String>,
     },
@@ -48,6 +50,9 @@ pub enum Ev {
     ProviderSession {
         id: String,
     },
+    Reasoning {
+        text: String,
+    },
     Text {
         text: String,
     },
@@ -55,41 +60,11 @@ pub enum Ev {
         name: String,
         input: Value,
     },
-    Permission {
-        tool: String,
-        decision: String,
-    },
-    Output {
-        data: String,
-    },
     TurnDone {
         ok: bool,
         summary: Option<String>,
         input_tokens: u64,
         output_tokens: u64,
-        cost_usd: f64,
-    },
-    RateLimited {
-        account: Option<String>,
-        message: String,
-    },
-    AccountSwitched {
-        from: Option<String>,
-        to: String,
-    },
-    Hook {
-        name: String,
-        payload: Value,
-    },
-    Annotation {
-        id: String,
-        file: String,
-        line: u32,
-        comment: String,
-    },
-    FeedbackSent {
-        annotations: Vec<String>,
-        prompt_id: String,
     },
     StopRequested,
     Suspended {
@@ -102,30 +77,15 @@ pub enum Ev {
         code: Option<i32>,
         clean: bool,
     },
-    Merged {
-        checkout: String,
-        branch: String,
-        into: String,
-        commit: String,
-    },
+    Archived,
     Note {
         level: String,
         message: String,
     },
-    /// A bot: a named, long-lived chat session with an avatar.
-    Profile {
-        name: String,
-        shape: String,
-        color: String,
-    },
-    ModelChanged {
-        model: String,
-    },
-    Archived,
 }
 
-/// What the daemon-wide stream carries: every session's events and state changes on one
-/// connection, so a client watching many sessions never runs out of browser connections.
+/// What the daemon-wide stream carries: every bot's events and state changes on one
+/// connection, so a window showing many bots never runs out of browser connections.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Live {
@@ -142,7 +102,6 @@ pub enum Status {
     Starting,
     Idle,
     Working,
-    RateLimited,
     Suspended,
     Orphaned,
     Exited,
@@ -152,10 +111,7 @@ pub enum Status {
 impl Status {
     /// No terminal event yet: the process should still be alive.
     pub fn is_live(self) -> bool {
-        matches!(
-            self,
-            Status::Starting | Status::Idle | Status::Working | Status::RateLimited
-        )
+        matches!(self, Status::Starting | Status::Idle | Status::Working)
     }
 }
 
@@ -164,15 +120,6 @@ pub struct Prompt {
     pub id: String,
     pub text: String,
     pub delivered: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AnnotationState {
-    pub id: String,
-    pub file: String,
-    pub line: u32,
-    pub comment: String,
-    pub sent: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -185,32 +132,22 @@ pub struct Profile {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     pub id: String,
-    pub agent: String,
-    pub workspace: String,
     pub cwd: String,
     pub title: String,
-    pub sandbox: String,
-    pub permission: String,
-    pub account: Option<String>,
     pub model: Option<String>,
-    pub group: Option<String>,
+    pub think: bool,
+    pub profile: Option<Profile>,
     pub status: Status,
     pub provider_session: Option<String>,
-    /// Prompts the agent has not acknowledged. Only these are ever re-sent on resume.
+    /// Messages the bot has not acknowledged. Only these are ever re-sent after a restart.
     pub pending: Vec<Prompt>,
-    /// Text of an acknowledged prompt whose turn has not finished (interrupted if the process dies).
+    /// An acknowledged message whose reply never finished (interrupted if the process died).
     pub open_turn: Option<String>,
     pub turns: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cost_usd: f64,
     pub last_text: Option<String>,
     pub pid: Option<u32>,
-    pub exit_code: Option<i32>,
-    pub stop_requested: bool,
-    pub annotations: Vec<AnnotationState>,
-    pub merged: bool,
-    pub profile: Option<Profile>,
     pub archived: bool,
     pub created: u64,
     pub updated: u64,
@@ -222,37 +159,26 @@ impl State {
         self.last_seq = e.seq;
         self.updated = e.ts;
         match &e.ev {
-            Ev::Created {
-                agent,
-                workspace,
-                cwd,
-                title,
-                sandbox,
-                permission,
-                account,
-                model,
-                group,
-            } => {
-                self.agent = agent.clone();
-                self.workspace = workspace.clone();
+            Ev::Created { cwd, title, model } => {
                 self.cwd = cwd.clone();
                 self.title = title.clone();
-                self.sandbox = sandbox.clone();
-                self.permission = permission.clone();
-                self.account = account.clone();
                 self.model = model.clone();
-                self.group = group.clone();
+                self.think = true;
                 self.created = e.ts;
-                self.status = Status::Starting;
             }
-            Ev::Spawned { pid, account, .. } => {
+            Ev::Profile { name, shape, color } => {
+                self.title = name.clone();
+                self.profile = Some(Profile {
+                    name: name.clone(),
+                    shape: shape.clone(),
+                    color: color.clone(),
+                });
+            }
+            Ev::ModelChanged { model } => self.model = Some(model.clone()),
+            Ev::ThinkChanged { think } => self.think = *think,
+            Ev::Spawned { pid, .. } => {
                 self.pid = *pid;
-                if account.is_some() {
-                    self.account = account.clone();
-                }
                 self.status = Status::Starting;
-                self.stop_requested = false;
-                self.exit_code = None;
             }
             Ev::Ready => {
                 if self.status == Status::Starting {
@@ -282,46 +208,19 @@ impl State {
             Ev::TurnDone {
                 input_tokens,
                 output_tokens,
-                cost_usd,
                 ..
             } => {
                 self.open_turn = None;
                 self.turns += 1;
                 self.input_tokens += input_tokens;
                 self.output_tokens += output_tokens;
-                self.cost_usd += cost_usd;
                 if self.status.is_live() {
                     self.status = Status::Idle;
                 }
             }
-            Ev::RateLimited { .. } => self.status = Status::RateLimited,
-            Ev::AccountSwitched { to, .. } => self.account = Some(to.clone()),
-            Ev::Annotation {
-                id,
-                file,
-                line,
-                comment,
-            } => self.annotations.push(AnnotationState {
-                id: id.clone(),
-                file: file.clone(),
-                line: *line,
-                comment: comment.clone(),
-                sent: false,
-            }),
-            Ev::FeedbackSent { annotations, .. } => {
-                for a in self
-                    .annotations
-                    .iter_mut()
-                    .filter(|a| annotations.contains(&a.id))
-                {
-                    a.sent = true;
-                }
-            }
-            Ev::StopRequested => self.stop_requested = true,
             Ev::Suspended { .. } => self.status = Status::Suspended,
             Ev::Orphaned { .. } => self.status = Status::Orphaned,
-            Ev::Exited { code, clean } => {
-                self.exit_code = *code;
+            Ev::Exited { clean, .. } => {
                 self.pid = None;
                 self.status = if *clean {
                     Status::Exited
@@ -329,26 +228,12 @@ impl State {
                     Status::Failed
                 };
             }
-            Ev::Merged { .. } => self.merged = true,
-            Ev::Profile { name, shape, color } => {
-                self.profile = Some(Profile {
-                    name: name.clone(),
-                    shape: shape.clone(),
-                    color: color.clone(),
-                });
-                self.title = name.clone();
-            }
-            Ev::ModelChanged { model } => self.model = Some(model.clone()),
             Ev::Archived => self.archived = true,
-            Ev::Output { .. }
-            | Ev::ToolCall { .. }
-            | Ev::Permission { .. }
-            | Ev::Hook { .. }
-            | Ev::Note { .. } => {}
+            Ev::Reasoning { .. } | Ev::ToolCall { .. } | Ev::StopRequested | Ev::Note { .. } => {}
         }
     }
 
-    /// Auto-resume only work that was interrupted. A clean exit is never resumed on its own.
+    /// Restart only what was interrupted. A cleanly stopped or deleted bot never restarts by itself.
     pub fn should_auto_resume(&self) -> bool {
         !self.archived && matches!(self.status, Status::Suspended | Status::Orphaned)
     }
@@ -358,38 +243,12 @@ impl State {
 mod tests {
     use super::*;
 
-    #[test]
-    fn bots_keep_profile_model_and_archive_state() {
-        let mut s = State::default();
-        let ev = |seq, ev| Event { seq, ts: seq, ev };
-        s.apply(&ev(
-            1,
-            Ev::Profile {
-                name: "Scout".into(),
-                shape: "star".into(),
-                color: "blue".into(),
-            },
-        ));
-        s.apply(&ev(
-            2,
-            Ev::ModelChanged {
-                model: "qwen3:0.6b".into(),
-            },
-        ));
-        assert_eq!(s.title, "Scout");
-        assert_eq!(s.model.as_deref(), Some("qwen3:0.6b"));
-        s.apply(&ev(3, Ev::Orphaned { generation: 2 }));
-        assert!(s.should_auto_resume());
-        s.apply(&ev(4, Ev::Archived));
-        assert!(!s.should_auto_resume());
-    }
-
     fn ev(seq: u64, ev: Ev) -> Event {
         Event { seq, ts: seq, ev }
     }
 
     #[test]
-    fn acked_prompts_are_not_pending_and_clean_exit_is_not_resumed() {
+    fn acknowledged_messages_are_not_resent_and_clean_exits_stay_stopped() {
         let mut s = State::default();
         s.apply(&ev(
             1,
@@ -409,6 +268,7 @@ mod tests {
         s.apply(&ev(4, Ev::PromptAcked { id: "a".into() }));
         assert_eq!(s.pending.len(), 1);
         assert_eq!(s.pending[0].id, "b");
+        assert_eq!(s.open_turn.as_deref(), Some("one"));
         s.apply(&ev(
             5,
             Ev::Exited {
@@ -419,5 +279,40 @@ mod tests {
         assert!(!s.should_auto_resume());
         s.apply(&ev(6, Ev::Orphaned { generation: 2 }));
         assert!(s.should_auto_resume());
+    }
+
+    #[test]
+    fn bots_keep_profile_model_think_and_archive_state() {
+        let mut s = State::default();
+        s.apply(&ev(
+            1,
+            Ev::Created {
+                cwd: "/x".into(),
+                title: "x".into(),
+                model: Some("qwen3:1.7b".into()),
+            },
+        ));
+        assert!(s.think);
+        s.apply(&ev(
+            2,
+            Ev::Profile {
+                name: "Scout".into(),
+                shape: "star".into(),
+                color: "green".into(),
+            },
+        ));
+        s.apply(&ev(
+            3,
+            Ev::ModelChanged {
+                model: "qwen3:0.6b".into(),
+            },
+        ));
+        s.apply(&ev(4, Ev::ThinkChanged { think: false }));
+        assert_eq!(s.title, "Scout");
+        assert_eq!(s.model.as_deref(), Some("qwen3:0.6b"));
+        assert!(!s.think);
+        s.apply(&ev(5, Ev::Orphaned { generation: 2 }));
+        s.apply(&ev(6, Ev::Archived));
+        assert!(!s.should_auto_resume());
     }
 }

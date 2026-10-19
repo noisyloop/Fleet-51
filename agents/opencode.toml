@@ -1,6 +1,0 @@
-name = "opencode"
-display = "OpenCode (ACP)"
-protocol = "acp"
-command = ["opencode", "acp"]
-rate_limit_pattern = "(?i)(rate.?limit|429)"
-install_hint = "npm i -g opencode-ai"

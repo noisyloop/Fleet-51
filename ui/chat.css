@@ -6,7 +6,7 @@
   --border: #2e2e32;
   --text: #ececee;
   --muted: #8e8e96;
-  --accent: #1a84ff;
+  --accent: #3ddc68;
   --danger: #ff5a5f;
   --ok: #2bd47d;
   --bubble: #2a2a2d;
@@ -41,13 +41,21 @@ code { font-family: var(--mono); font-size: .9em; background: var(--raised); pad
 .pill:hover { filter: brightness(1.15); }
 .pill.ghost { background: transparent; }
 .pill.light { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
-.pill.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pill.primary { background: var(--accent); border-color: var(--accent); color: #06120a; }
 .pill:disabled { opacity: .5; cursor: default; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .app { display: flex; height: 100%; }
 .side { width: 300px; flex: none; background: var(--side); display: flex; flex-direction: column; border-right: 1px solid var(--border); }
 .side-top { display: flex; align-items: center; gap: 8px; padding: 12px; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: .2px; margin-right: auto; }
+.brand img { border-radius: 7px; }
+.search-wrap:not([hidden]) ~ .brand, .side-top:has(.search-wrap:not([hidden])) .brand { display: none; }
+.pill.small { padding: 4px 12px; font-size: 13px; }
+.pill[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.m-reason { color: var(--muted); font-size: 14px; border-left: 2px solid var(--border); padding-left: 12px; }
+.m-reason summary { cursor: pointer; user-select: none; }
+.m-reason-body { white-space: pre-wrap; margin-top: 6px; max-height: 320px; overflow: auto; }
 .search-wrap { flex: 1; }
 .search-wrap input { width: 100%; background: var(--raised); border: 0; border-radius: 999px; padding: 9px 14px; }
 .bots { flex: 1; overflow: auto; padding: 4px 8px; }
