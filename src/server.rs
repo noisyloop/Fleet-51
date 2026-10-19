@@ -69,6 +69,7 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/bots/{id}/messages", get(history).post(send))
         .route("/api/bots/{id}/model", post(bot_model))
         .route("/api/bots/{id}/think", post(bot_think))
+        .route("/api/bots/{id}/run-code", post(bot_run_code))
         .route("/api/bots/{id}/delete", post(bot_delete))
         .route("/api/bots/{id}/undo", post(bot_undo))
         .route("/api/bots/{id}/clear", post(bot_clear))
@@ -129,7 +130,7 @@ async fn health(State(d): D) -> Json<Value> {
 async fn runtime(State(d): D) -> Json<Value> {
     let r = d.runtime.lock().unwrap().clone();
     Json(
-        json!({"runtime": r, "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "default_model": crate::runtime::DEFAULT_MODEL, "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
+        json!({"runtime": r, "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "sandbox": crate::sandbox::available().is_some(), "default_model": crate::runtime::DEFAULT_MODEL, "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
     )
 }
 
@@ -144,7 +145,7 @@ fn bot_json(s: &Session) -> Value {
     json!({
         "id": st.id, "name": p.as_ref().map(|p| p.name.clone()).unwrap_or(st.title.clone()),
         "shape": p.as_ref().map(|p| p.shape.clone()), "color": p.as_ref().map(|p| p.color.clone()),
-        "model": st.model, "think": st.think, "folder": st.cwd, "status": st.status, "preview": st.last_text,
+        "model": st.model, "think": st.think, "run_code": st.run_code, "folder": st.cwd, "status": st.status, "preview": st.last_text,
         "pending": st.pending.len(), "updated": st.updated, "created": st.created,
     })
 }
@@ -232,6 +233,20 @@ async fn bot_undo(State(d): D, Path(id): Path<String>, Json(u): Json<Undo>) -> R
 async fn bot_clear(State(d): D, Path(id): Path<String>) -> R<Value> {
     let s = d.bot(&id)?;
     d.clear_chat(&s);
+    Ok(Json(bot_json(&s)))
+}
+
+#[derive(Deserialize)]
+struct RunCode {
+    run_code: bool,
+}
+
+async fn bot_run_code(State(d): D, Path(id): Path<String>, Json(r): Json<RunCode>) -> R<Value> {
+    let s = d.bot(&id)?;
+    let d2 = d.clone();
+    let on = r.run_code;
+    let s2 = s.clone();
+    tokio::task::spawn_blocking(move || d2.set_run_code(&s2, on)).await??;
     Ok(Json(bot_json(&s)))
 }
 

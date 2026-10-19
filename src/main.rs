@@ -67,6 +67,9 @@ enum Cmd {
         max_steps: usize,
         #[arg(long)]
         think: bool,
+        /// Offer the sandboxed run_command tool
+        #[arg(long)]
+        run_code: bool,
         #[arg(long, default_value = "auto")]
         tool_mode: String,
     },
@@ -102,6 +105,7 @@ fn real_main() -> Result<()> {
             state_dir,
             max_steps,
             think,
+            run_code,
             tool_mode,
         } => agent::run(agent::Opts {
             model,
@@ -109,6 +113,7 @@ fn real_main() -> Result<()> {
             state_dir,
             max_steps,
             think,
+            run_code,
             tool_mode,
         }),
         Cmd::Up { listen } => up(&home, &listen),

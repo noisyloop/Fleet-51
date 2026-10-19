@@ -22,6 +22,8 @@ pub struct Opts {
     pub max_steps: usize,
     /// Let reasoning models think before answering; the reasoning is shown in the chat.
     pub think: bool,
+    /// Offer run_command (only if a sandbox works on this computer).
+    pub run_code: bool,
     /// native | text | auto (native, falling back to text for models without tool calling)
     pub tool_mode: String,
 }
@@ -265,7 +267,9 @@ fn run_tool(
             }
         }
         "run_command" => {
-            let kind = sandbox.ok_or_else(|| anyhow!("running programs is not available"))?;
+            let kind = sandbox.ok_or_else(|| {
+                anyhow!("running programs is switched off for you; the user can turn it on")
+            })?;
             let (code, output) = crate::sandbox::run(kind, root, &s("command")?)?;
             let output = if output.trim().is_empty() {
                 "(no output)".to_string()
@@ -420,12 +424,22 @@ pub fn run(o: Opts) -> Result<()> {
         .and_then(|f| std::fs::read_to_string(f).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| vec![json!({"role": "system", "content": SYSTEM_PROMPT})]);
-    let sandbox = crate::sandbox::available();
+    let sandbox = if o.run_code {
+        crate::sandbox::available()
+    } else {
+        None
+    };
+    // Running code can be switched on and off mid-conversation; keep the instructions in step.
     if let Some(sys) = messages.first_mut() {
-        let text = sys["content"].as_str().unwrap_or_default().to_string();
-        if sandbox.is_some() && !text.contains("run_command") {
-            sys["content"] = json!(text + RUN_PROMPT);
-        }
+        let text = sys["content"]
+            .as_str()
+            .unwrap_or_default()
+            .replace(RUN_PROMPT, "");
+        sys["content"] = json!(if sandbox.is_some() {
+            text + RUN_PROMPT
+        } else {
+            text
+        });
     }
     let tools = tools(sandbox.is_some());
     let mut text_mode = o.tool_mode == "text";

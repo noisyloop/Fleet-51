@@ -31,7 +31,8 @@ Create a bot, give it a name and a face, pick a free model, and chat. Run as man
   cloud, no telemetry.
 - **Safe by design:** each bot has its own folder (`~/Fleet-51/<bot name>`, private to you) and can
   only read and write files there.
-- **Runs its own code, in a sandbox:** a bot can run what it writes to check it works. The code runs
+- **Runs its own code, only if you allow it:** running code is off for every bot until you switch on
+  **Run code** in its chat. Then it can run what it writes to check it works. The code runs
   in the operating system's sandbox (built into macOS; bubblewrap on Linux) with no internet, the
   rest of your home folder hidden, only its own folder writable, and a 60-second limit. Where no
   sandbox is available, bots simply can't run code.

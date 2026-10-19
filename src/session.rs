@@ -256,6 +256,9 @@ async fn run_agent(
     if let Some(m) = &st.model {
         cmd.args(["--model", m]);
     }
+    if st.run_code {
+        cmd.arg("--run-code");
+    }
     if st.think {
         cmd.arg("--think");
     }

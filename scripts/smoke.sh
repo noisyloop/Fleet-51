@@ -80,7 +80,11 @@ api "/api/bots/$SCOUT/undo" "{\"checkpoint\":\"$CK\"}" | grep -q '"ok":true' || 
 [ "$(cat "$FLEET51_BOTS_DIR/Scout/notes.md")" = "hi" ] || fail "undo did not restore notes.md"
 wait_for "$SCOUT" "e['type']=='undone'"
 
-step "Run code: only inside the sandbox, never outside the folder"
+step "Run code: off unless switched on; then only inside the sandbox"
+api "/api/bots/$FLEET/messages" '{"text":"run code"}' >/dev/null
+wait_for "$FLEET" "e['type']=='text' and 'switched off' in e['text']"
+[ ! -e "$FLEET51_BOTS_DIR/Fleet/out.txt" ] || fail "a bot ran code with running code off"
+if api "/api/bots/$SCOUT/run-code" '{"run_code":true}' | grep -q '"run_code":true'; then
 api "/api/bots/$SCOUT/messages" '{"text":"run code"}' >/dev/null
 wait_for "$SCOUT" "e['type']=='text' and e['text'].startswith('Tool said') and e['seq']>$(api "/api/bots/$SCOUT/messages" | json "d[-1]['seq']")"
 RAN=$(api "/api/bots/$SCOUT/messages" | json "[e['text'] for e in d if e['type']=='text'][-1]")
@@ -88,10 +92,13 @@ echo "$RAN"
 [ ! -e "$FLEET51_BOTS_DIR/sandbox-escape.txt" ] || fail "code wrote outside the bot folder"
 if echo "$RAN" | grep -q "ran-in-sandbox"; then
   [ -f "$FLEET51_BOTS_DIR/Scout/out.txt" ] || fail "sandboxed code could not write in its folder"
-elif [ "$(uname)" = Darwin ]; then
-  fail "the macOS sandbox did not run the code"
 else
-  echo "(no sandbox on this machine: the bot is told it cannot run programs)"
+  fail "the sandbox did not run the code"
+fi
+elif [ "$(uname)" = Darwin ]; then
+  fail "no sandbox found on macOS"
+else
+  echo "(no sandbox on this machine: running code cannot be switched on)"
 fi
 
 step "Clear chat: messages go, the bot starts fresh"

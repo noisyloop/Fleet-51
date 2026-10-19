@@ -31,6 +31,10 @@ pub enum Ev {
     ThinkChanged {
         think: bool,
     },
+    /// Whether the bot may run code (in the sandbox). Off unless you turn it on.
+    RunCodeChanged {
+        run_code: bool,
+    },
     Spawned {
         pid: Option<u32>,
         generation: u64,
@@ -164,6 +168,8 @@ pub struct State {
     pub title: String,
     pub model: Option<String>,
     pub think: bool,
+    #[serde(default)]
+    pub run_code: bool,
     pub profile: Option<Profile>,
     pub status: Status,
     pub provider_session: Option<String>,
@@ -207,6 +213,7 @@ impl State {
             }
             Ev::ModelChanged { model } => self.model = Some(model.clone()),
             Ev::ThinkChanged { think } => self.think = *think,
+            Ev::RunCodeChanged { run_code } => self.run_code = *run_code,
             Ev::Spawned { pid, .. } => {
                 self.pid = *pid;
                 self.status = Status::Starting;

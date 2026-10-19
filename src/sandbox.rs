@@ -19,8 +19,13 @@ pub enum Kind {
     Bwrap,
 }
 
-/// Which sandbox this computer has, checked by actually running one.
+/// Which sandbox this computer has, checked once by actually running one.
 pub fn available() -> Option<Kind> {
+    static FOUND: std::sync::OnceLock<Option<Kind>> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(detect)
+}
+
+fn detect() -> Option<Kind> {
     if std::env::var_os("FLEET51_NO_SANDBOX").is_some() {
         return None;
     }

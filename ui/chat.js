@@ -108,6 +108,7 @@ let runtime = { state: 'checking' };
 let defaultModel = 'qwen3:1.7b';
 let lastSeq = 0;
 let online = true;
+let sandbox = false;
 let autos = [];
 let prompts = new Map();
 let typingEl = null;
@@ -195,8 +196,25 @@ function renderThink() {
   t.title = b.think ? 'The model reasons before answering (shown in the chat). Slower.' : 'Faster replies without reasoning.';
 }
 
+function renderCode() {
+  const b = bot();
+  const c = $('#btn-code');
+  c.hidden = !b || !sandbox;
+  if (c.hidden) return;
+  c.setAttribute('aria-pressed', String(!!b.run_code));
+  c.textContent = b.run_code ? 'Run code: on' : 'Run code: off';
+  c.title = b.run_code ? 'This bot can run code in a sandbox: no internet, only its own folder, 60 seconds at most.' : 'This bot cannot run programs. Turn on to let it test the code it writes, inside a sandbox.';
+}
+async function toggleCode() {
+  const b = bot();
+  if (!b) return;
+  if (!b.run_code && !confirm(`Let ${b.name} run code?\n\nIt runs in a sandbox: no internet, it can only change files in its own folder (${b.folder}), the rest of your home folder is hidden, and each run stops after 60 seconds. You can undo its file changes.`)) return;
+  try { Object.assign(b, await api(`/api/bots/${b.id}/run-code`, { run_code: !b.run_code })); renderCode(); } catch (e) { toast(e.message); }
+}
+
 function renderHead() {
   renderThink();
+  renderCode();
   const b = bot();
   $('#head-avatar').replaceChildren(b ? avatar(b.shape, b.color, 30) : '');
   $('#head-name').textContent = b ? b.name : '';
@@ -298,6 +316,7 @@ function render(e) {
     case 'turn_done': if (!e.ok && e.summary) add(el('div', { class: 'm-error', text: friendlyError(e.summary) })); break;
     case 'note': if (e.level === 'error' || e.level === 'warn') add(el('div', { class: 'm-error', text: e.message })); break;
     case 'model_changed': add(el('div', { class: 'm-sys', text: `Switched to ${e.model}` })); break;
+    case 'run_code_changed': add(el('div', { class: 'm-sys', text: e.run_code ? 'Running code on: only inside a sandbox, in this bot\'s folder' : 'Running code off' })); break;
     case 'think_changed': add(el('div', { class: 'm-sys', text: e.think ? 'Thinking on: replies show their reasoning' : 'Thinking off: faster replies' })); break;
   }
 }
@@ -613,10 +632,10 @@ async function refresh() {
 function onState(s) {
   const b = bots.find((x) => x.id === s.id);
   if (!s.profile || s.archived) { if (b && s.archived) refresh(); return; }
-  const next = { id: s.id, name: s.profile.name, shape: s.profile.shape, color: s.profile.color, model: s.model, think: s.think, folder: s.cwd, status: s.status, preview: s.last_text, pending: s.pending.length, updated: s.updated, created: s.created };
+  const next = { id: s.id, name: s.profile.name, shape: s.profile.shape, color: s.profile.color, model: s.model, think: s.think, run_code: s.run_code, folder: s.cwd, status: s.status, preview: s.last_text, pending: s.pending.length, updated: s.updated, created: s.created };
   if (b) Object.assign(b, next); else bots.push(next);
   renderBots();
-  if (s.id === current) { updateTyping(); renderThink(); if (b && b.model !== next.model) renderModelSelect(); }
+  if (s.id === current) { updateTyping(); renderThink(); renderCode(); if (b && b.model !== next.model) renderModelSelect(); }
 }
 
 // Older versions installed a caching service worker that could show the old interface.
@@ -630,6 +649,7 @@ async function boot() {
     runtime = r.runtime;
     defaultModel = r.default_model;
     setOnline(r.online !== false);
+    sandbox = !!r.sandbox;
     autos = await api('/api/automations');
     await loadModels();
     await refresh();
@@ -682,6 +702,7 @@ $('#auto-delete').onclick = async () => {
 $('#btn-back').onclick = () => document.getElementById('app').classList.remove('in-chat');
 $('#btn-menu').onclick = () => { $('#menu').hidden = !$('#menu').hidden; };
 document.addEventListener('click', (e) => { if (!e.target.closest('#btn-menu') && (!e.target.closest('#menu') || e.target.closest('#menu button'))) $('#menu').hidden = true; });
+$('#btn-code').onclick = toggleCode;
 $('#btn-think').onclick = async () => {
   const b = bot();
   if (!b) return;
