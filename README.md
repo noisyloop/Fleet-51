@@ -27,6 +27,14 @@ no subscription, no usage limit, and it keeps working on a plane.
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
 
+## What's new in 0.5.6
+
+- **Setup no longer gets stuck on "Starting Ollama…".** If the model engine became ready at the
+  moment the window opened, the setup screen could miss it and wait forever. It now checks again
+  when it connects, and every few seconds while it's showing.
+  *On 0.5.5 or earlier and stuck there?* Reload the window (Mac: **⌘R**; Windows: **F5**) and it
+  carries on.
+
 ## What's new in 0.5.5
 
 - **Updates take over properly, even with Fleet-51 still running.** Installing a new version over a

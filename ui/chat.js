@@ -800,6 +800,20 @@ function onState(s) {
 if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
 if (window.caches) caches.keys().then((ks) => ks.forEach((k) => caches.delete(k))).catch(() => {});
 
+// The engine's state from the service (the live stream only reports changes, which can be missed).
+async function syncRuntime() {
+  try {
+    const r = await api('/api/runtime');
+    const was = runtime.state;
+    runtime = r.runtime;
+    renderSetup();
+    if (runtime.state === 'ready' && was !== 'ready') loadModels();
+    return r;
+  } catch { return null; }
+}
+// While setup is showing, keep checking, so it can never wait on a message it missed.
+setInterval(() => { if (token && !$('#setup').hidden) syncRuntime(); }, 3000);
+
 async function boot() {
   if (!token) return showGate();
   try {
@@ -835,7 +849,8 @@ async function boot() {
   };
   es.onopen = () => {
     // After an update the new service takes over on the same address: load its interface.
-    api('/api/runtime').then((r) => { if (build && r.build && r.build !== build) location.reload(); }).catch(() => {});
+    // Otherwise catch up on the engine's state: it may have changed before this stream opened.
+    syncRuntime().then((r) => { if (r && build && r.build && r.build !== build) location.reload(); });
     refresh().catch(() => {}); if (current) api(`/api/bots/${current}/messages?since=${lastSeq}`).then((evs) => evs.forEach(render)).catch(() => {}); };
 }
 
