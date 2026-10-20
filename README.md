@@ -27,6 +27,14 @@ no subscription, no usage limit, and it keeps working on a plane.
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
 
+## What's new in 0.5.3
+
+- **Windows: the app opens right after installing.** Before, the first launch started Fleet-51 in
+  the background but never showed its window.
+- **Windows: Run code can be switched on.** Windows has no sandbox in Fleet-51 yet, so code a bot
+  runs there is not sandboxed: Fleet-51 says so before you switch it on, and it stays off unless
+  you do.
+
 ## What's new in 0.5.2
 
 - **A much smaller first setup on Windows:** Fleet-51 now downloads about 40 MB of Ollama instead
@@ -64,8 +72,10 @@ no subscription, no usage limit, and it keeps working on a plane.
 - **Runs its own code, only if you allow it:** running code is off for every bot until you switch on
   **Run code** in its chat. Then it can run what it writes to check it works. The code runs
   in the operating system's sandbox (built into macOS; bubblewrap on Linux) with no internet, the
-  rest of your home folder hidden, only its own folder writable, and a 60-second limit. Where no
-  sandbox is available, bots simply can't run code.
+  rest of your home folder hidden, only its own folder writable, and a 60-second limit. On Windows
+  there's no sandbox yet: code runs in the bot's folder with the same time limit but could reach
+  anything your account can, and Fleet-51 warns you before you switch it on. Elsewhere without a
+  sandbox, bots simply can't run code.
 - **Undo:** before a bot changes its files in a reply, Fleet-51 keeps a copy outside the bot's reach.
   **Undo** under that reply puts the folder back exactly as it was.
 - **Tidy up:** right-click a bot to clear its chat or delete it. Automation history can be deleted run
@@ -104,9 +114,9 @@ the old one and keeps your bots and chats.
    into Fleet-51, then downloads the first model (about 1.4 GB).
 
 Closing the window leaves your bots running; the alien icon in the system tray reopens it, and
-**Quit and Stop Bots** there stops everything. On Windows, **Run code** isn't available yet: Windows
-has no sandbox as simple as macOS's, so bots there can't run programs until one is built. Everything
-else works the same.
+**Quit and Stop Bots** there stops everything. On Windows, **Run code** isn't sandboxed yet: Windows
+has no sandbox as simple as macOS's, so code a bot runs could reach anything your account can.
+It's off unless you switch it on, after a warning. Everything else works the same.
 
 On Linux you can build from source (below) with Ollama installed.
 
@@ -147,4 +157,4 @@ missed while the computer was asleep or off happens when Fleet-51 is next runnin
 
 ## Coming later
 
-Email notifications, Run code on Windows, a Linux package, and signed builds.
+Email notifications, a sandbox for Run code on Windows, a Linux package, and signed builds.

@@ -203,7 +203,7 @@ impl Daemon {
     }
 
     pub fn set_run_code(&self, s: &Arc<Session>, run_code: bool) -> Result<()> {
-        if run_code && crate::sandbox::available().is_none() {
+        if run_code && crate::sandbox::for_code().is_none() {
             bail!("this computer has no sandbox for running code, so bots can't run code here");
         }
         s.emit(Ev::RunCodeChanged { run_code });

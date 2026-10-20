@@ -4,7 +4,7 @@
 //!
 //! A bot can only touch files inside its own folder: every path is resolved (following symlinks)
 //! and checked against the folder before use, and code runs only inside the sandbox (see
-//! sandbox.rs). Before a bot's first change in a reply its folder is copied aside for Undo.
+//! sandbox.rs; on Windows, which has none yet, the user switches it on knowing that). Before a bot's first change in a reply its folder is copied aside for Undo.
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ pub struct Opts {
     pub max_steps: usize,
     /// Let reasoning models think before answering; the reasoning is shown in the chat.
     pub think: bool,
-    /// Offer run_command (only if a sandbox works on this computer).
+    /// Offer run_command (in a sandbox; on Windows, which has none yet, unprotected).
     pub run_code: bool,
     /// native | text | auto (native, falling back to text for models without tool calling)
     pub tool_mode: String,
@@ -61,7 +61,7 @@ pub fn ollama_models() -> Result<Vec<String>> {
         .collect())
 }
 
-fn tools(can_run: bool) -> Value {
+fn tools(run: Option<crate::sandbox::Kind>) -> Value {
     let f = |name: &str, desc: &str, props: Value, req: &[&str]| {
         json!({"type": "function", "function": {"name": name, "description": desc,
             "parameters": {"type": "object", "properties": props, "required": req}}})
@@ -98,11 +98,18 @@ fn tools(can_run: bool) -> Value {
             &["path", "old_text", "new_text"]
         ),
     ]);
-    if can_run {
+    if let Some(kind) = run {
+        let about = if kind == crate::sandbox::Kind::Unprotected {
+            "Run a Windows command (cmd) in your folder, for example to test code you wrote \
+             (python app.py). It stops after 60 seconds. It is not sandboxed: only work with files \
+             in your folder."
+        } else {
+            "Run a shell command in your folder, for example to test code you wrote (python3 app.py). \
+             It has no internet access, can only change files in your folder and stops after 60 seconds."
+        };
         t.as_array_mut().expect("array").push(f(
             "run_command",
-            "Run a shell command in your folder, for example to test code you wrote (python3 app.py). \
-             It has no internet access, can only change files in your folder and stops after 60 seconds.",
+            about,
             json!({"command": {"type": "string"}}),
             &["command"],
         ));
@@ -119,6 +126,11 @@ for ordinary questions and conversation, just answer. Be clear and concise.";
 const RUN_PROMPT: &str =
     " You can also run commands in your folder with run_command (no internet, \
 60-second limit). When you write code, run it to check it works before saying it is done.";
+/// Windows, where commands aren't sandboxed yet.
+const RUN_PROMPT_UNPROTECTED: &str =
+    " You can also run Windows commands in your folder with run_command (60-second limit). They \
+are not sandboxed, so only read and change files in your folder and never delete anything outside \
+it. When you write code, run it to check it works before saying it is done.";
 
 /// Tools that change the folder; the first one in a reply takes an undo checkpoint.
 const CHANGES_FILES: &[&str] = &["write_file", "edit_file", "run_command"];
@@ -615,7 +627,7 @@ pub fn run(o: Opts) -> Result<()> {
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_else(|| vec![json!({"role": "system", "content": SYSTEM_PROMPT})]);
     let sandbox = if o.run_code {
-        crate::sandbox::available()
+        crate::sandbox::for_code()
     } else {
         None
     };
@@ -624,14 +636,15 @@ pub fn run(o: Opts) -> Result<()> {
         let text = sys["content"]
             .as_str()
             .unwrap_or_default()
-            .replace(RUN_PROMPT, "");
-        sys["content"] = json!(if sandbox.is_some() {
-            text + RUN_PROMPT
-        } else {
-            text
+            .replace(RUN_PROMPT, "")
+            .replace(RUN_PROMPT_UNPROTECTED, "");
+        sys["content"] = json!(match sandbox {
+            Some(crate::sandbox::Kind::Unprotected) => text + RUN_PROMPT_UNPROTECTED,
+            Some(_) => text + RUN_PROMPT,
+            None => text,
         });
     }
-    let tools = tools(sandbox.is_some());
+    let tools = tools(sandbox);
     let mut text_mode = o.tool_mode == "text";
     if text_mode {
         enter_text_mode(&mut messages, &tools);

@@ -182,7 +182,7 @@ async fn health(State(d): D) -> Json<Value> {
 async fn runtime(State(d): D) -> Json<Value> {
     let r = d.runtime.lock().unwrap().clone();
     Json(
-        json!({"runtime": r, "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "sandbox": crate::sandbox::available().is_some(), "default_model": crate::runtime::DEFAULT_MODEL, "memory_gb": crate::runtime::memory_gb(), "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
+        json!({"runtime": r, "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "sandbox": crate::sandbox::available().is_some(), "run_code": crate::sandbox::for_code().is_some(), "default_model": crate::runtime::DEFAULT_MODEL, "memory_gb": crate::runtime::memory_gb(), "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
     )
 }
 
