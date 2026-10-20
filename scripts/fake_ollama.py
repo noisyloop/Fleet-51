@@ -19,6 +19,10 @@ DEMO_REPLIES = [
 ]
 
 MODELS = {"qwen3:1.7b": 1107409472, "qwen3:0.6b": 396705472, "gemma4:e4b": 9600000000}
+# FAKE_NO_MODELS=1: a fresh install with nothing downloaded yet (for looking at first-run setup).
+NO_MODELS = os.environ.get("FAKE_NO_MODELS") == "1"
+if NO_MODELS:
+    MODELS.clear()
 
 
 class H(BaseHTTPRequestHandler):
@@ -43,7 +47,8 @@ class H(BaseHTTPRequestHandler):
         elif self.path == "/api/tags":
             models = [{"name": n, "size": s, "details": {"parameter_size": "1B", "quantization_level": "Q4"}} for n, s in MODELS.items()]
             # A cloud model as Ollama lists it: tiny on disk, run on a remote host.
-            models.append({"name": "deepseek-v4.1-flash:1017-cloud", "size": 384, "remote_model": "deepseek-v4.1-flash:1017", "remote_host": "https://ollama.com:443", "details": {}})
+            if not NO_MODELS:
+                models.append({"name": "deepseek-v4.1-flash:1017-cloud", "size": 384, "remote_model": "deepseek-v4.1-flash:1017", "remote_host": "https://ollama.com:443", "details": {}})
             self.send({"models": models})
         else:
             self.send({"error": "not found"}, 404)

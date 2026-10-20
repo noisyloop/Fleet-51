@@ -186,6 +186,13 @@ LAST=$(api "/api/bots/$SCOUT/messages" | json "d[-1]['seq']")
 api "/api/bots/$SCOUT/messages" '{"text":"still there?"}' >/dev/null
 wait_for "$SCOUT" "e['type']=='text' and e['text'].startswith('Hello') and e['seq']>$LAST"
 
+step "Models: free space is known, and a bot on a missing model takes the next one downloaded"
+[ "$(api /api/models | json "d['free_bytes'] > 0 and all(s['bytes'] for s in d['suggested'])")" = "True" ] || fail "free space or model sizes missing"
+api "/api/bots/$SCOUT/model" '{"model":"not-downloaded:1b"}' >/dev/null
+api /api/models/pull '{"name":"tinydolphin"}' >/dev/null
+for _ in $(seq 100); do [ "$(api /api/bots | json "[b['model'] for b in d if b['id']=='$SCOUT'][0]")" = "tinydolphin" ] && break; sleep 0.2; done
+[ "$(api /api/bots | json "[b['model'] for b in d if b['id']=='$SCOUT'][0]")" = "tinydolphin" ] || fail "the bot did not switch to the downloaded model"
+
 step "Delete a bot"
 api "/api/bots/$FLEET/delete" '{}' >/dev/null
 [ "$(api /api/bots | json 'len(d)')" = "1" ] || fail "bot not deleted"

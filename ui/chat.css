@@ -141,6 +141,12 @@ dialog form { display: flex; flex-direction: column; max-height: calc(100vh - 40
 .steps li.done .tick { background: var(--ok); border-color: var(--ok); }
 .steps li.fail .tick { background: var(--danger); border-color: var(--danger); }
 .steps .sub { color: var(--muted); font-size: 13px; }
+.choices { display: grid; gap: 8px; margin-top: 10px; }
+.choices:empty { display: none; }
+.choice { display: grid; gap: 2px; text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--raised); color: inherit; font: inherit; cursor: pointer; }
+.choice:hover:not(:disabled) { border-color: var(--accent); }
+.choice:disabled { opacity: .55; cursor: default; }
+.setup-skip { display: block; margin: 14px auto 0; background: none; border: 0; color: var(--muted); text-decoration: underline; font: inherit; font-size: 14px; cursor: pointer; }
 
 .token-gate { position: fixed; inset: 0; background: var(--bg); display: grid; place-items: center; z-index: 30; }
 .token-gate > div { width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }

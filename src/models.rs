@@ -65,6 +65,132 @@ pub const SUGGESTED: &[(&str, &str, bool, &str)] = &[
     ),
 ];
 
+/// Space left free on the disk after a download, so a model never fills it.
+pub const KEEP_FREE: u64 = 2_000_000_000;
+
+/// "1.4 GB" or "about 10 GB" (as in SUGGESTED) in bytes.
+pub fn size_bytes(size: &str) -> Option<u64> {
+    let n: f64 = size.split_whitespace().find_map(|w| w.parse().ok())?;
+    Some((n * 1e9) as u64)
+}
+
+/// Where Ollama keeps models: OLLAMA_MODELS, else ~/.ollama/models (or the nearest folder of it
+/// that exists, which is on the same disk).
+fn models_dir() -> std::path::PathBuf {
+    let dir = std::env::var_os("OLLAMA_MODELS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| crate::home::user_home().join(".ollama").join("models"));
+    dir.ancestors()
+        .find(|d| d.is_dir())
+        .map(|d| d.to_path_buf())
+        .unwrap_or(dir)
+}
+
+/// Free space on the disk that holds Ollama's models, in bytes.
+pub fn free_bytes() -> Option<u64> {
+    let dir = models_dir();
+    let text = if cfg!(windows) {
+        let drive: String = dir.to_string_lossy().chars().take(2).collect();
+        if !drive.ends_with(':') {
+            return None;
+        }
+        let mut c = std::process::Command::new("powershell.exe");
+        c.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("([System.IO.DriveInfo]::new('{drive}\\')).AvailableFreeSpace"),
+        ]);
+        crate::home::no_window(&mut c);
+        String::from_utf8_lossy(&c.output().ok()?.stdout).to_string()
+    } else {
+        let out = std::process::Command::new("df")
+            .arg("-Pk")
+            .arg(&dir)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let kb: u64 = text
+            .lines()
+            .nth(1)?
+            .split_whitespace()
+            .nth(3)?
+            .parse()
+            .ok()?;
+        (kb * 1024).to_string()
+    };
+    text.trim().parse().ok()
+}
+
+/// A model's download size from Ollama's registry, before downloading anything. `None` when it
+/// can't be known (offline, another registry, a cloud model).
+pub fn download_size(name: &str) -> Option<u64> {
+    let url = manifest_url(name)?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .into();
+    let v: Value = agent
+        .get(&url)
+        .header(
+            "Accept",
+            "application/vnd.docker.distribution.manifest.v2+json",
+        )
+        .call()
+        .ok()?
+        .body_mut()
+        .read_json()
+        .ok()?;
+    let layers = v["layers"].as_array()?;
+    Some(
+        layers
+            .iter()
+            .filter_map(|l| l["size"].as_u64())
+            .sum::<u64>()
+            + v["config"]["size"].as_u64().unwrap_or(0),
+    )
+}
+
+/// Where Ollama's registry keeps a model's manifest (only for models from ollama.com).
+fn manifest_url(name: &str) -> Option<String> {
+    let (path, tag) = name.split_once(':').unwrap_or((name, "latest"));
+    if tag.contains("cloud") || name.ends_with("-cloud") {
+        return None;
+    }
+    let path = match path.split('/').collect::<Vec<_>>()[..] {
+        [model] => format!("library/{model}"),
+        [first, _] if !first.contains('.') => path.to_string(),
+        _ => return None,
+    };
+    Some(format!(
+        "https://registry.ollama.ai/v2/{path}/manifests/{tag}"
+    ))
+}
+
+fn gb(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1e9)
+}
+
+/// Refuse a download of `needed` more bytes that would leave less than KEEP_FREE on the disk.
+pub fn check_space(name: &str, needed: u64) -> Result<()> {
+    match free_bytes() {
+        Some(free) => fits(name, needed, free),
+        None => Ok(()),
+    }
+}
+
+fn fits(name: &str, needed: u64, free: u64) -> Result<()> {
+    if needed.saturating_add(KEEP_FREE) > free {
+        bail!(
+            "not enough disk space: {name} needs {} and {} is free (Fleet-51 keeps at least {} free). Choose a smaller model or free up space.",
+            gb(needed),
+            gb(free),
+            gb(KEEP_FREE)
+        );
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Pull {
     pub name: String,
@@ -125,8 +251,9 @@ pub fn installed() -> Result<Vec<Value>> {
     Ok(out)
 }
 
-/// Download a model, calling `progress` as Ollama reports it. Blocking.
-pub fn pull(name: &str, mut progress: impl FnMut(&Pull)) -> Result<()> {
+/// Download a model, calling `progress` as Ollama reports it; `progress` returns an error to
+/// stop the download. Blocking.
+pub fn pull(name: &str, mut progress: impl FnMut(&Pull) -> Result<()>) -> Result<()> {
     let resp = agent()
         .post(&format!("{}/api/pull", ollama_root()))
         .send_json(json!({"model": name, "stream": true}))
@@ -157,7 +284,7 @@ pub fn pull(name: &str, mut progress: impl FnMut(&Pull)) -> Result<()> {
             p.completed = c;
             p.total = t;
         }
-        progress(&p);
+        progress(&p)?;
         if p.status == "success" {
             return Ok(());
         }
@@ -176,4 +303,41 @@ pub fn delete(name: &str) -> Result<()> {
         bail!("{}", error_of(&v, "delete failed"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sizes_and_disk_space_are_checked_before_downloading() {
+        assert_eq!(size_bytes("1.4 GB"), Some(1_400_000_000));
+        assert_eq!(size_bytes("about 10 GB"), Some(10_000_000_000));
+        assert!(SUGGESTED.iter().all(|s| size_bytes(s.1).is_some()));
+        let reg = "https://registry.ollama.ai/v2";
+        assert_eq!(
+            manifest_url("qwen3:1.7b").unwrap(),
+            format!("{reg}/library/qwen3/manifests/1.7b")
+        );
+        assert_eq!(
+            manifest_url("gemma4").unwrap(),
+            format!("{reg}/library/gemma4/manifests/latest")
+        );
+        assert_eq!(
+            manifest_url("someone/model:q4").unwrap(),
+            format!("{reg}/someone/model/manifests/q4")
+        );
+        assert_eq!(manifest_url("hf.co/someone/model"), None);
+        assert_eq!(manifest_url("deepseek-v4.1-flash:cloud"), None);
+        // 1.4 GB fits in 3.5 GB (2 GB stays free) but not in 3.3 GB.
+        assert!(fits("qwen3:1.7b", 1_400_000_000, 3_500_000_000).is_ok());
+        let err = fits("qwen3:1.7b", 1_400_000_000, 3_300_000_000)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not enough disk space") && err.contains("3.3 GB is free"),
+            "{err}"
+        );
+        assert!(free_bytes().is_some_and(|b| b > 0), "free space unknown");
+    }
 }
