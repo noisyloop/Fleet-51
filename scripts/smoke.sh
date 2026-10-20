@@ -46,7 +46,10 @@ wait_for() {
 
 (cd "$ROOT" && cargo build -q)
 "$PY" "$ROOT/scripts/fake_ollama.py" 11499 & FAKE_PID=$!
-sleep 1
+# Fleet-51 checks for Ollama once at startup; if the stand-in isn't answering yet it goes off
+# to download the real one. Python can be slow to start on CI runners, so wait for it.
+for _ in $(seq 100); do curl -sf "http://$OLLAMA_HOST/api/version" >/dev/null && break; sleep 0.2; done
+curl -sf "http://$OLLAMA_HOST/api/version" >/dev/null || fail "stand-in Ollama did not start"
 
 step "First launch: the service starts, finds Ollama and creates the first bot"
 "$BIN" up --listen "127.0.0.1:$PORT"
