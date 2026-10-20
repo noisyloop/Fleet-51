@@ -50,9 +50,14 @@ sleep 1
 
 step "First launch: the service starts, finds Ollama and creates the first bot"
 "$BIN" up --listen "127.0.0.1:$PORT"
-for _ in $(seq 50); do [ "$(api /api/bots | json 'len(d)')" = "1" ] && break; sleep 0.2; done
+# First-run setup (finding Ollama, pulling the first model) can take a while on slow CI runners,
+# so wait on a clock rather than a count of tries.
+deadline=$((SECONDS + 90))
+until [ "$(api /api/bots | json 'len(d)')" = "1" ] && "$BIN" status | grep -q "models: ready (system"; do
+  [ "$SECONDS" -lt "$deadline" ] || { "$BIN" status; fail "model engine not ready after 90s"; }
+  sleep 0.5
+done
 "$BIN" status
-"$BIN" status | grep -q "models: ready (system" || fail "model engine not ready"
 FLEET=$(api /api/bots | json 'd[0]["id"]')
 [ "$(api /api/models | json "[m['cloud'] for m in d['installed'] if m['name'].endswith('-cloud')][0]")" = "True" ] || fail "cloud model not marked"
 [ "$(api /api/models | json "[m['cloud'] for m in d['installed'] if m['name']=='qwen3:1.7b'][0]")" = "False" ] || fail "local model marked as cloud"
