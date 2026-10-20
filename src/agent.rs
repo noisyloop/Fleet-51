@@ -365,22 +365,36 @@ fn parse_text_call(content: &str) -> Option<(String, Value)> {
     None
 }
 
-fn chat(model: &str, think: bool, messages: &[Value], tools: Option<&Value>) -> Result<Value> {
+/// Send the conversation to Ollama's native chat API. Unlike its OpenAI-compatible endpoint, it
+/// takes a context size: without one Ollama uses 4K tokens on most computers, which the
+/// instructions, tools, history and reasoning fill quickly, and replies stop part way through.
+/// Messages are kept (and saved) in the OpenAI shape; the reply is turned back into it too.
+fn chat(
+    model: &str,
+    think: bool,
+    num_ctx: Option<u64>,
+    messages: &[Value],
+    tools: Option<&Value>,
+) -> Result<Value> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(900)))
         .build()
         .into();
-    let mut body = json!({"model": model, "messages": messages, "stream": false});
+    let native: Vec<Value> = messages.iter().map(to_native).collect();
+    let mut body = json!({"model": model, "messages": native, "stream": false});
     if let Some(t) = tools {
         body["tools"] = t.clone();
     }
     if !think {
-        // Ollama maps this to think=false: replies arrive far sooner on small hardware.
-        body["reasoning_effort"] = json!("none");
+        // Replies arrive far sooner on small hardware.
+        body["think"] = json!(false);
+    }
+    if let Some(n) = num_ctx {
+        body["options"] = json!({"num_ctx": n});
     }
     let mut resp = agent
-        .post(&format!("{}/v1/chat/completions", ollama_root()))
+        .post(&format!("{}/api/chat", ollama_root()))
         .send_json(body)
         .context("the model engine is not running yet")?;
     let status = resp.status();
@@ -392,7 +406,95 @@ fn chat(model: &str, think: bool, messages: &[Value], tools: Option<&Value>) -> 
             .unwrap_or("request failed");
         bail!("{msg}");
     }
-    Ok(body)
+    Ok(from_native(&body))
+}
+
+/// One message in Ollama's native shape: images as base64, tool call arguments as objects.
+fn to_native(m: &Value) -> Value {
+    let mut n = json!({"role": m["role"], "content": ""});
+    match &m["content"] {
+        Value::Array(parts) => {
+            let text: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+            n["content"] = json!(text.join("\n"));
+            let images: Vec<&str> = parts
+                .iter()
+                .filter_map(|p| p["image_url"]["url"].as_str())
+                .filter_map(|u| u.split_once(";base64,").map(|(_, b64)| b64))
+                .collect();
+            if !images.is_empty() {
+                n["images"] = json!(images);
+            }
+        }
+        Value::String(s) => n["content"] = json!(s),
+        _ => {}
+    }
+    if let Some(calls) = m["tool_calls"].as_array() {
+        let calls: Vec<Value> = calls
+            .iter()
+            .map(|c| {
+                let args = match &c["function"]["arguments"] {
+                    Value::String(s) => serde_json::from_str(s).unwrap_or(json!({})),
+                    v => v.clone(),
+                };
+                json!({"id": c["id"], "function": {"name": c["function"]["name"], "arguments": args}})
+            })
+            .collect();
+        n["tool_calls"] = json!(calls);
+    }
+    if m["role"] == "tool" {
+        n["tool_name"] = m["name"].clone();
+        n["tool_call_id"] = m["tool_call_id"].clone();
+    }
+    n
+}
+
+/// A native reply in the OpenAI shape the rest of the agent reads.
+fn from_native(r: &Value) -> Value {
+    let m = &r["message"];
+    let mut message =
+        json!({"role": "assistant", "content": m["content"].as_str().unwrap_or_default()});
+    if let Some(t) = m["thinking"].as_str().filter(|t| !t.is_empty()) {
+        message["reasoning"] = json!(t);
+    }
+    if let Some(calls) = m["tool_calls"].as_array().filter(|c| !c.is_empty()) {
+        message["tool_calls"] = json!(calls);
+    }
+    json!({
+        "choices": [{"message": message, "finish_reason": r["done_reason"].as_str().unwrap_or("stop")}],
+        "usage": {"prompt_tokens": r["prompt_eval_count"], "completion_tokens": r["eval_count"]},
+    })
+}
+
+/// What Ollama reports about a model (capabilities, context length).
+fn show(model: &str) -> Value {
+    ureq::post(&format!("{}/api/show", ollama_root()))
+        .send_json(json!({"model": model}))
+        .ok()
+        .and_then(|mut r| r.body_mut().read_json::<Value>().ok())
+        .unwrap_or(Value::Null)
+}
+
+/// How many tokens of conversation to give a model: as much as this computer's memory
+/// comfortably holds, never more than the model was made for. An OLLAMA_CONTEXT_LENGTH the user
+/// set themselves wins.
+fn context_size(info: &Value) -> Option<u64> {
+    if std::env::var("OLLAMA_CONTEXT_LENGTH").is_ok_and(|v| !v.trim().is_empty()) {
+        return None;
+    }
+    let wanted = match crate::runtime::memory_gb() {
+        Some(gb) if gb >= 24 => 32768,
+        Some(gb) if gb >= 12 => 16384,
+        _ => 8192,
+    };
+    let trained = info["model_info"]
+        .as_object()
+        .and_then(|i| {
+            i.iter()
+                .find(|(k, _)| k.ends_with(".context_length"))
+                .and_then(|(_, v)| v.as_u64())
+        })
+        .filter(|&n| n > 0);
+    Some(trained.map_or(wanted, |t| t.min(wanted)))
 }
 
 fn enter_text_mode(messages: &mut [Value], tools: &Value) {
@@ -433,12 +535,9 @@ fn mark_made_by_bot(path: &Path) {
 }
 
 /// Whether a model accepts images (Ollama reports a "vision" capability).
-fn can_see(model: &str) -> bool {
-    ureq::post(&format!("{}/api/show", ollama_root()))
-        .send_json(json!({"model": model}))
-        .ok()
-        .and_then(|mut r| r.body_mut().read_json::<Value>().ok())
-        .and_then(|s| s["capabilities"].as_array().cloned())
+fn can_see(info: &Value) -> bool {
+    info["capabilities"]
+        .as_array()
         .is_some_and(|c| c.iter().any(|x| x == "vision"))
 }
 
@@ -607,7 +706,9 @@ pub fn run(o: Opts) -> Result<()> {
             .filter(|n| root.join(n).is_file())
             .collect();
         let images = crate::files::image_urls(&root, &attached);
-        let sees = !images.is_empty() && can_see(&model);
+        let info = show(&model);
+        let num_ctx = context_size(&info);
+        let sees = !images.is_empty() && can_see(&info);
         let text = if attached.is_empty() {
             text
         } else {
@@ -633,7 +734,13 @@ pub fn run(o: Opts) -> Result<()> {
         let mut error: Option<String> = None;
         let mut checkpointed = false;
         for step in 0..o.max_steps {
-            let mut reply = chat(&model, o.think, &messages, (!text_mode).then_some(&tools));
+            let mut reply = chat(
+                &model,
+                o.think,
+                num_ctx,
+                &messages,
+                (!text_mode).then_some(&tools),
+            );
             if let Err(e) = &reply {
                 if !text_mode
                     && o.tool_mode == "auto"
@@ -641,7 +748,7 @@ pub fn run(o: Opts) -> Result<()> {
                 {
                     text_mode = true;
                     enter_text_mode(&mut messages, &tools);
-                    reply = chat(&model, o.think, &messages, None);
+                    reply = chat(&model, o.think, num_ctx, &messages, None);
                 }
             }
             let body = match reply {
@@ -685,6 +792,11 @@ pub fn run(o: Opts) -> Result<()> {
             if !content.is_empty() {
                 last = content.clone();
                 say(&session, json!({"type": "text", "text": content}));
+            }
+            if body["choices"][0]["finish_reason"] == "length" {
+                out(
+                    json!({"type": "system", "subtype": "notice", "session_id": session, "message": "This reply was cut off: the model ran out of room. Ask it to continue, or clear the chat to free up space."}),
+                );
             }
             if text_mode {
                 messages.push(json!({"role": "assistant", "content": raw}));
@@ -792,6 +904,41 @@ mod tests {
         assert_eq!(n, "read_file");
         assert_eq!(a["path"], "a.md");
         assert!(parse_text_call("All done.").is_none());
+    }
+
+    #[test]
+    fn messages_convert_to_and_from_the_native_api() {
+        let user = to_native(&json!({"role": "user", "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR"}}]}));
+        assert_eq!(
+            user,
+            json!({"role": "user", "content": "look", "images": ["iVBOR"]})
+        );
+        let call = to_native(&json!({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "function": {"name": "read_file", "arguments": "{\"path\":\"a.md\"}"}}]}));
+        assert_eq!(
+            call["tool_calls"][0]["function"]["arguments"]["path"],
+            "a.md"
+        );
+        let result = to_native(
+            &json!({"role": "tool", "tool_call_id": "c1", "name": "read_file", "content": "hi"}),
+        );
+        assert_eq!(result["tool_name"], "read_file");
+        let reply = from_native(
+            &json!({"message": {"role": "assistant", "content": "partial",
+            "thinking": "hmm"}, "done_reason": "length", "prompt_eval_count": 7, "eval_count": 3}),
+        );
+        assert_eq!(reply["choices"][0]["message"]["reasoning"], "hmm");
+        assert_eq!(reply["choices"][0]["finish_reason"], "length");
+        assert_eq!(reply["usage"]["completion_tokens"], 3);
+    }
+
+    #[test]
+    fn the_context_never_exceeds_what_the_model_was_made_for() {
+        let small = json!({"model_info": {"llama.context_length": 2048}});
+        assert_eq!(context_size(&small), Some(2048));
+        assert!(context_size(&Value::Null).unwrap() >= 8192);
     }
 
     #[test]
