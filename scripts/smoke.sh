@@ -106,7 +106,14 @@ api "/api/bots/$SCOUT/messages" '{"text":"break it"}' >/dev/null
 wait_for "$SCOUT" "e['type']=='text' and 'wrote notes.md' in e['text'] and e['seq']>$(api "/api/bots/$SCOUT/messages" | json "max(x['seq'] for x in d if x['type']=='checkpoint')")"
 [ "$(cat "$FLEET51_BOTS_DIR/Scout/notes.md")" = "broken" ] || fail "notes.md not overwritten"
 CK=$(api "/api/bots/$SCOUT/messages" | json "[e['id'] for e in d if e['type']=='checkpoint'][-1]")
-api "/api/bots/$SCOUT/undo" "{\"checkpoint\":\"$CK\"}" | grep -q '"ok":true' || fail "undo refused"
+# The reply's text can arrive a moment before the bot finishes its turn, and undo waits for that.
+UNDONE=""
+for _ in $(seq 50); do
+  OUT=$(api "/api/bots/$SCOUT/undo" "{\"checkpoint\":\"$CK\"}")
+  echo "$OUT" | grep -q '"ok":true' && { UNDONE=1; break; }
+  sleep 0.2
+done
+[ -n "$UNDONE" ] || fail "undo refused: $OUT"
 [ "$(cat "$FLEET51_BOTS_DIR/Scout/notes.md")" = "hi" ] || fail "undo did not restore notes.md"
 wait_for "$SCOUT" "e['type']=='undone'"
 
