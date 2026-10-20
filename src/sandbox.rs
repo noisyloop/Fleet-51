@@ -1,7 +1,9 @@
 //! Running a bot's code safely. Commands run with the bot's folder as the only writable place, no
 //! network, the rest of your home folder hidden, a clean environment and a time limit.
 //! macOS uses its built-in sandbox (sandbox-exec); Linux uses bubblewrap (bwrap) when installed.
-//! Where neither works, bots are not offered the tool at all.
+//! Windows has no sandbox here yet: there, Run code runs commands as a plain process in the bot's
+//! folder (clean environment, time limit) and the user is told so before switching it on.
+//! Anywhere else without a working sandbox, bots are not offered the tool at all.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -17,6 +19,18 @@ const MAX_OUTPUT: usize = 16 * 1024;
 pub enum Kind {
     MacOs,
     Bwrap,
+    /// Windows, not sandboxed: a plain process in the bot's folder, with the time limit.
+    Unprotected,
+}
+
+/// How a bot's code would run if the user switches on Run code: in a sandbox, or on Windows
+/// (which has none here yet) unprotected. `None`: bots can't run code on this computer.
+pub fn for_code() -> Option<Kind> {
+    available().or(if cfg!(windows) {
+        Some(Kind::Unprotected)
+    } else {
+        None
+    })
 }
 
 /// Which sandbox this computer has, checked once by actually running one.
@@ -111,8 +125,21 @@ fn macos_profile(folder: &Path, extra_read: Option<&Path>) -> String {
     )
 }
 
-/// Run `command` with `sh -c` inside the sandbox, in `folder`. Returns the exit code and output.
+/// Run `command` with `sh -c` inside the sandbox (on Windows, `cmd /c` unprotected), in `folder`.
+/// Returns the exit code and output.
 pub fn run(kind: Kind, folder: &Path, command: &str) -> Result<(Option<i32>, String)> {
+    if kind == Kind::Unprotected {
+        let cmd = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
+        // /S: cmd takes everything between the outer quotes as the command line, as typed.
+        let line = format!("\"{command}\"");
+        return run_program(
+            Some(kind),
+            folder,
+            Path::new(&cmd),
+            &["/D", "/S", "/C", &line],
+            None,
+        );
+    }
     run_program(
         Some(kind),
         folder,
@@ -137,6 +164,20 @@ pub fn run_program(
     let mut cmd = match kind {
         None => {
             let mut c = Command::new(program);
+            c.args(args);
+            c
+        }
+        Some(Kind::Unprotected) => {
+            let mut c = Command::new(program);
+            // cmd.exe has its own quoting rules: pass its command line exactly as written.
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                for a in args {
+                    c.raw_arg(a);
+                }
+            }
+            #[cfg(not(windows))]
             c.args(args);
             c
         }
@@ -197,6 +238,8 @@ pub fn run_program(
         .envs(keep)
         .env("HOME", &folder)
         .env("TMPDIR", &tmp)
+        .env("TEMP", &tmp)
+        .env("TMP", &tmp)
         .env("LANG", "en_US.UTF-8")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -237,6 +280,16 @@ pub fn run_program(
             break Some(s);
         }
         if started.elapsed() > TIMEOUT {
+            // Windows: stop the whole tree, so programs it started don't keep running.
+            #[cfg(windows)]
+            {
+                let mut k = Command::new("taskkill");
+                k.args(["/T", "/F", "/PID", &child.id().to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                crate::home::no_window(&mut k);
+                let _ = k.status();
+            }
             #[cfg(unix)]
             {
                 let _ = Command::new("kill")
@@ -331,6 +384,30 @@ mod tests {
             let (_, out) = run(kind, &folder, "ls -A /run | wc -l").unwrap();
             assert_eq!(out.trim(), "0", "/run is visible in the sandbox");
         }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runs_code_unprotected_in_the_folder() {
+        assert_eq!(for_code(), Some(Kind::Unprotected));
+        let base = std::env::temp_dir().join(format!("fleet51-win-run-{}", std::process::id()));
+        let folder = base.join("bot");
+        std::fs::create_dir_all(&folder).unwrap();
+        // Quotes reach cmd as typed; the command starts in the bot's folder.
+        let (code, out) = run(
+            Kind::Unprotected,
+            &folder,
+            r#"echo "hi there"> a.txt && type a.txt && cd"#,
+        )
+        .unwrap();
+        assert_eq!(code, Some(0), "{out}");
+        assert!(out.contains(r#""hi there""#), "{out}");
+        assert!(folder.join("a.txt").is_file());
+        let shown = out.lines().last().unwrap_or_default().to_lowercase();
+        assert!(shown.ends_with("bot"), "{out}");
+        let (code, _) = run(Kind::Unprotected, &folder, "exit 3").unwrap();
+        assert_eq!(code, Some(3));
         let _ = std::fs::remove_dir_all(&base);
     }
 }

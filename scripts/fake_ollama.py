@@ -85,6 +85,8 @@ class H(BaseHTTPRequestHandler):
                 msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "write_file", "arguments": {"path": "notes.md", "content": "broken"}}}]}
             elif last["role"] == "user" and "run code" in last["content"]:
                 cmd = "echo ran-in-sandbox > out.txt && cat out.txt && echo nope > ../sandbox-escape.txt"
+                if os.name == "nt":  # Windows runs commands in cmd, without a sandbox
+                    cmd = "echo ran-unprotected> out.txt && type out.txt"
                 msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "run_command", "arguments": {"command": cmd}}}]}
             elif last["role"] == "user" and "context size" in last["content"]:
                 msg = {"role": "assistant", "content": f"My context is {b.get('options', {}).get('num_ctx')} tokens."}

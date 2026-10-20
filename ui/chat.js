@@ -120,6 +120,7 @@ let lastSeq = 0;
 let online = true;
 let memoryGb = null;
 let sandbox = false;
+let canRunCode = false; // on Windows, without a sandbox yet
 let autos = [];
 let prompts = new Map();
 let typingEl = null;
@@ -213,16 +214,21 @@ function renderThink() {
 function renderCode() {
   const b = bot();
   const c = $('#btn-code');
-  c.hidden = !b || !sandbox;
+  c.hidden = !b || !canRunCode;
   if (c.hidden) return;
   c.setAttribute('aria-pressed', String(!!b.run_code));
   c.textContent = b.run_code ? 'Run code: on' : 'Run code: off';
-  c.title = b.run_code ? 'This bot can run code in a sandbox: no internet, only its own folder, 60 seconds at most.' : 'This bot cannot run programs. Turn on to let it test the code it writes, inside a sandbox.';
+  c.title = !sandbox
+    ? (b.run_code ? 'This bot can run code on this computer, without a sandbox (Windows has none in Fleet-51 yet). 60 seconds at most.' : 'This bot cannot run programs. On Windows, code runs without a sandbox.')
+    : b.run_code ? 'This bot can run code in a sandbox: no internet, only its own folder, 60 seconds at most.' : 'This bot cannot run programs. Turn on to let it test the code it writes, inside a sandbox.';
 }
 async function toggleCode() {
   const b = bot();
   if (!b) return;
-  if (!b.run_code && !confirm(`Let ${b.name} run code?\n\nIt runs in a sandbox: no internet, it can only change files in its own folder (${b.folder}), the rest of your home folder is hidden, and each run stops after 60 seconds. You can undo its file changes.`)) return;
+  const ask = sandbox
+    ? `Let ${b.name} run code?\n\nIt runs in a sandbox: no internet, it can only change files in its own folder (${b.folder}), the rest of your home folder is hidden, and each run stops after 60 seconds. You can undo its file changes.`
+    : `Let ${b.name} run code WITHOUT a sandbox?\n\nOn Windows, Fleet-51 can't sandbox code yet. Code ${b.name} runs starts in its folder (${b.folder}) and stops after 60 seconds, but it can reach the internet and read, change or delete anything your user account can. Undo only covers ${b.name}'s folder.\n\nOnly switch this on if you trust what you ask it to do.`;
+  if (!b.run_code && !confirm(ask)) return;
   try { Object.assign(b, await api(`/api/bots/${b.id}/run-code`, { run_code: !b.run_code })); renderCode(); } catch (e) { toast(e.message); }
 }
 
@@ -347,7 +353,7 @@ function render(e) {
     case 'turn_done': if (!e.ok && e.summary) add(el('div', { class: 'm-error', text: friendlyError(e.summary) })); break;
     case 'note': if (e.level === 'error' || e.level === 'warn') add(el('div', { class: 'm-error', text: e.message })); break;
     case 'model_changed': add(el('div', { class: 'm-sys', text: `Switched to ${e.model}` })); break;
-    case 'run_code_changed': add(el('div', { class: 'm-sys', text: e.run_code ? 'Running code on: only inside a sandbox, in this bot\'s folder' : 'Running code off' })); break;
+    case 'run_code_changed': add(el('div', { class: 'm-sys', text: e.run_code ? (sandbox ? 'Running code on: only inside a sandbox, in this bot\'s folder' : 'Running code on: not sandboxed on Windows, starts in this bot\'s folder') : 'Running code off' })); break;
     case 'think_changed': add(el('div', { class: 'm-sys', text: e.think ? 'Thinking on: replies show their reasoning' : 'Thinking off: faster replies' })); break;
   }
 }
@@ -763,6 +769,7 @@ async function boot() {
     setOnline(r.online !== false);
     memoryGb = r.memory_gb;
     sandbox = !!r.sandbox;
+    canRunCode = r.run_code ?? sandbox;
     autos = await api('/api/automations');
     await loadModels();
     await refresh();
