@@ -27,11 +27,13 @@ no subscription, no usage limit, and it keeps working on a plane.
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
 
-## What's new in 0.5.0
+## What's new in 0.5.1
+
+Version 0.5.1 of Fleet-51, naturally. 👽
 
 - **Replies finish properly:** bots get a full-size context window, so long answers no longer stop
   part way and the chat doesn't get stuck.
-- **Windows app:** its own window, an installer and an automated build.
+- **Windows app:** its own window, an installer and an automated build, now passing every check.
 - **Files and code stay put:** what a bot writes goes into its own folder (named after the bot), and
   nothing it makes is run automatically.
 
