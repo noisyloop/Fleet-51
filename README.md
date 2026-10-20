@@ -27,10 +27,11 @@ no subscription, no usage limit, and it keeps working on a plane.
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
 
-## What's new in 0.5.1
+## What's new in 0.5.2
 
-Version 0.5.1 of Fleet-51, naturally. 👽
-
+- **A much smaller first setup on Windows:** Fleet-51 now downloads about 40 MB of Ollama instead
+  of 1.4 GB. It leaves out NVIDIA's CUDA libraries and runs models on the graphics card through
+  Vulkan instead (NVIDIA, AMD and Intel). If you already have Ollama, Fleet-51 uses yours.
 - **Replies finish properly:** bots get a full-size context window, so long answers no longer stop
   part way and the chat doesn't get stuck.
 - **Windows app:** its own window, an installer and an automated build, now passing every check.
@@ -99,8 +100,8 @@ the old one and keeps your bots and chats.
 2. Run it. It installs for your user only, no administrator rights needed. The installer isn't signed
    yet, so Windows may say "Windows protected your PC": choose **More info › Run anyway**.
 3. Fleet-51 opens and sets itself up the first time: it uses Ollama if you have it, otherwise it
-   downloads Ollama (about 1.5 GB, as it includes graphics-card support) and checks it against a
-   SHA-256 built into Fleet-51, then downloads the first model.
+   downloads the parts of Ollama it needs (about 40 MB), checks every file against a SHA-256 built
+   into Fleet-51, then downloads the first model (about 1.4 GB).
 
 Closing the window leaves your bots running; the alien icon in the system tray reopens it, and
 **Quit and Stop Bots** there stops everything. On Windows, **Run code** isn't available yet: Windows

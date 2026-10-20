@@ -2,7 +2,8 @@
 //! 1. an Ollama the user is already running (OLLAMA_HOST or 127.0.0.1:11434);
 //! 2. a Fleet-51-managed Ollama on a private port, started from an `ollama` already installed;
 //! 3. on macOS and Windows, a pinned Ollama release downloaded on first launch and checked
-//!    against a SHA-256 built into Fleet-51 (the same hash Ollama publishes in sha256sum.txt).
+//!    against SHA-256s built into Fleet-51: on macOS the hash Ollama publishes in
+//!    sha256sum.txt; on Windows one per file (see `download_windows`).
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -18,7 +19,9 @@ use crate::home::Home;
 
 pub const OLLAMA_VERSION: &str = "v0.40.6";
 const DARWIN_TGZ_SHA256: &str = "b2b55434865a668decb494110d7fd970eed3ecc8837be2872f672ccbb95df974";
-const WINDOWS_ZIP_SHA256: &str = "e359637575302f288d76c0007c408a4be9c7376d59c4f28684d63b232a44b427";
+/// The files taken from Ollama's Windows zip, each with its SHA-256. Made by
+/// scripts/ollama_windows_files.py from the official zip, checked against Ollama's own hash.
+const WINDOWS_FILES: &str = include_str!("ollama-windows-files.txt");
 /// The Ollama program's file name on this system.
 const OLLAMA_EXE: &str = if cfg!(windows) {
     "ollama.exe"
@@ -161,31 +164,42 @@ fn download_darwin(dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
     Ok(dir.join("ollama"))
 }
 
-/// Windows: the pinned zip (it includes GPU support, so it is large), unpacked safely: every
-/// entry must stay inside `dir`.
+/// Windows: the pinned zip is about 1.4 GB, nearly all NVIDIA CUDA libraries. Only the files in
+/// `WINDOWS_FILES` (about 37 MB: the program, CPU support and Vulkan, which runs models on
+/// NVIDIA, AMD and Intel graphics) are read out of it, each checked against its SHA-256. They
+/// go into a scratch folder that becomes `dir` only once everything has arrived.
 fn download_windows(dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
-    let zip_path = download_checked(dir, "ollama-windows-amd64.zip", WINDOWS_ZIP_SHA256, report)?;
-    let unpacked = (|| -> Result<()> {
-        let mut zip = zip::ZipArchive::new(std::fs::File::open(&zip_path)?)?;
-        for i in 0..zip.len() {
-            let mut entry = zip.by_index(i)?;
-            let Some(rel) = entry.enclosed_name() else {
-                bail!("unexpected path in the Ollama download");
-            };
-            let to = dir.join(rel);
-            if entry.is_dir() {
-                std::fs::create_dir_all(&to)?;
-                continue;
-            }
-            if let Some(parent) = to.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::io::copy(&mut entry, &mut std::fs::File::create(&to)?)?;
+    let url = format!("https://github.com/ollama/ollama/releases/download/{OLLAMA_VERSION}/ollama-windows-amd64.zip");
+    download_windows_from(&url, dir, report)
+}
+
+fn download_windows_from(url: &str, dir: &Path, report: &dyn Fn(Runtime)) -> Result<PathBuf> {
+    let files: Vec<(&str, &str)> = WINDOWS_FILES
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_once("  "))
+        .collect();
+    let name = dir.file_name().context("no folder for Ollama")?;
+    let part = dir.with_file_name(format!("{}.part", name.to_string_lossy()));
+    let _ = std::fs::remove_dir_all(&part);
+    std::fs::create_dir_all(&part)?;
+    let fetched = crate::zip_range::fetch_files(url, &part, &files, &|completed, total| {
+        report(Runtime::Downloading { completed, total })
+    });
+    if let Err(e) = fetched {
+        let _ = std::fs::remove_dir_all(&part);
+        return Err(e.context("downloading Ollama failed; nothing was installed"));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    // Antivirus scanning the new files can hold them open for a moment.
+    let mut tries = 0;
+    while let Err(e) = std::fs::rename(&part, dir) {
+        tries += 1;
+        if tries == 20 {
+            return Err(e).context("could not put Ollama in place");
         }
-        Ok(())
-    })();
-    let _ = std::fs::remove_file(&zip_path);
-    unpacked.context("could not unpack Ollama")?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
     Ok(dir.join(OLLAMA_EXE))
 }
 
@@ -317,4 +331,36 @@ fn read_memory_gb() -> Option<u64> {
         kb * 1024
     };
     Some((bytes + (1 << 29)) >> 30)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real thing, from GitHub: `cargo test -- --ignored` after changing OLLAMA_VERSION.
+    /// FLEET51_TEST_OLLAMA_ZIP points it at a copy or relay of the zip instead.
+    #[test]
+    #[ignore = "downloads about 37 MB"]
+    fn the_pinned_windows_files_download_and_match() {
+        let base = std::env::temp_dir().join(format!("fleet51-ollama-win-{}", std::process::id()));
+        let dir = base.join(format!("ollama-{OLLAMA_VERSION}"));
+        let total = std::sync::Mutex::new(0);
+        let report = |r| {
+            if let Runtime::Downloading { total: t, .. } = r {
+                *total.lock().unwrap() = t;
+            }
+        };
+        let got = match std::env::var("FLEET51_TEST_OLLAMA_ZIP") {
+            Ok(url) => download_windows_from(&url, &dir, &report),
+            Err(_) => download_windows(&dir, &report),
+        }
+        .unwrap_or_else(|e| panic!("{e:#}"));
+        assert_eq!(got, dir.join(OLLAMA_EXE));
+        assert!(dir.join("ollama.exe").is_file());
+        assert!(dir.join("lib/ollama/vulkan/ggml-vulkan.dll").is_file());
+        assert!(!dir.join("lib/ollama/cuda_v13").exists());
+        let mb = *total.lock().unwrap() / 1_000_000;
+        assert!((20..60).contains(&mb), "{mb} MB");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
