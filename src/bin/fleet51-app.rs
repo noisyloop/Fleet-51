@@ -223,6 +223,8 @@ mod app {
                 }
                 Event::UserEvent(UserEvent::Tray(TrayIconEvent::DoubleClick { .. })) => {
                     if app.windows.is_empty() {
+                        // Fleet-51 may have been updated since: make sure its service is current.
+                        let _ = start_service();
                         let _ = app.open(target, &app.home.clone());
                     } else if let Some((w, _)) = app.windows.values().next() {
                         w.set_focus();
@@ -233,6 +235,7 @@ mod app {
                         if let Some((w, _)) = app.windows.values().next() {
                             w.set_focus();
                         } else {
+                            let _ = start_service();
                             let _ = app.open(target, &app.home.clone());
                         }
                     } else if e.id == new_window.id() {

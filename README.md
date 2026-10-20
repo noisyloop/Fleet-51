@@ -27,6 +27,17 @@ no subscription, no usage limit, and it keeps working on a plane.
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
 
+## What's new in 0.5.5
+
+- **Updates take over properly, even with Fleet-51 still running.** Installing a new version over a
+  running one used to leave the old version in charge, showing its old screens (on Windows the
+  setup screen couldn't be clicked). Now the running service notices it has been replaced and
+  hands over to the new version within seconds, and an open window reloads onto it.
+  *Updating from 0.5.4 or earlier:* quit Fleet-51 first (**Quit and Stop Bots**), as those versions
+  can't hand over by themselves yet.
+- **Skip is always on the setup screen**, and a model download can be cancelled, in setup and in
+  **Models**.
+
 ## What's new in 0.5.4
 
 - **You choose the first model.** Setup lists a few small models with their sizes and your free
@@ -110,8 +121,8 @@ no subscription, no usage limit, and it keeps working on a plane.
    files and code; any Mac with 8 GB of memory runs it.
 
 Closing the window leaves your bots running in the background. **Fleet-51 › Quit and Stop Bots**
-(⌥⌘Q) stops everything. Updating is just installing a newer `.dmg`; the new version takes over from
-the old one and keeps your bots and chats.
+(⌥⌘Q) stops everything. Updating is just installing a newer `.dmg`, even while Fleet-51 runs: the
+new version takes over from the old one within seconds and keeps your bots and chats.
 
 ## Install on Windows
 
