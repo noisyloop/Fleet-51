@@ -370,6 +370,14 @@ fn handle_line(s: &Session, line: &str, inflight: &mut VecDeque<String>) {
                     .into(),
             });
         }
+        Some("system") if v["subtype"] == "notice" => {
+            if let Some(m) = v["message"].as_str() {
+                s.emit(Ev::Note {
+                    level: "warn".into(),
+                    message: m.into(),
+                });
+            }
+        }
         Some("user") if v["isReplay"] == true => {
             if let Some(id) = inflight.pop_front() {
                 s.emit(Ev::PromptAcked { id });

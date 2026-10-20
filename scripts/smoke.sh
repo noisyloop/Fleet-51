@@ -79,6 +79,12 @@ wait_for "$SCOUT" "e['type']=='text' and e['text'].startswith('Hello') and e['se
 AFTER=$(api "/api/bots/$SCOUT/messages" | json "sum(e['type']=='reasoning' for e in d)")
 [ "$BEFORE" = "$AFTER" ] || fail "reasoning appeared with Think off"
 
+step "Long replies: the model gets a big context, and a cut-off reply says so"
+api "/api/bots/$SCOUT/messages" '{"text":"what is your context size?"}' >/dev/null
+wait_for "$SCOUT" "e['type']=='text' and e['text'].startswith('My context is') and int(e['text'].split()[3]) >= 8192"
+api "/api/bots/$SCOUT/messages" '{"text":"this one gets cut off"}' >/dev/null
+wait_for "$SCOUT" "e['type']=='note' and 'cut off' in e['message']"
+
 step "Files: a bot writes inside its folder, and cannot write outside it"
 api "/api/bots/$SCOUT/messages" '{"text":"save a note"}' >/dev/null
 wait_for "$SCOUT" "e['type']=='text' and 'wrote notes.md' in e['text']"

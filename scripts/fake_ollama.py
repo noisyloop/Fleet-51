@@ -3,7 +3,8 @@
 Replies echo the model name and include reasoning unless thinking is turned off. Messages
 containing "save a note" make the model write notes.md; "escape" makes it try to write
 outside its folder; "break it" overwrites notes.md; "run code" runs a command that also tries to
-write outside the folder.
+write outside the folder; "context size" reports the context size asked for; "cut off" ends the
+reply as if the model ran out of room.
 """
 import json
 import os
@@ -51,14 +52,14 @@ class H(BaseHTTPRequestHandler):
         b = self.body()
         if self.path == "/api/show":
             caps = ["completion", "tools", "thinking"] + (["vision"] if b.get("model", "").startswith("gemma4") else [])
-            self.send({"capabilities": caps})
+            self.send({"capabilities": caps, "model_info": {"qwen3.context_length": 40960}})
         elif self.path == "/api/pull":
             self.send_response(200)
             self.end_headers()
             for st in ["pulling manifest", "success"]:
                 self.wfile.write(json.dumps({"status": st}).encode() + b"\n")
             MODELS[b["model"]] = 1
-        elif self.path == "/v1/chat/completions":
+        elif self.path == "/api/chat":
             model = b["model"]
             if model not in MODELS:
                 return self.send({"error": {"message": f"model '{model}' not found"}}, 404)
@@ -68,30 +69,31 @@ class H(BaseHTTPRequestHandler):
                 for key, reply, why in DEMO_REPLIES:
                     if key in last["content"].lower():
                         time.sleep(1.2)
-                        return self.send({"choices": [{"message": {"role": "assistant", "content": reply, "reasoning": why}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
-            if isinstance(last.get("content"), list):
-                images = sum(1 for p in last["content"] if p.get("type") == "image_url" and p["image_url"]["url"].startswith("data:image/png;base64,"))
-                text = " ".join(p.get("text", "") for p in last["content"] if p.get("type") == "text")
-                self.send({"choices": [{"message": {"role": "assistant", "content": f"I can see {images} image(s). {text[-80:]}"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+                        return self.send({"message": {"role": "assistant", "content": reply, "thinking": why}, "done": True, "done_reason": "stop", "prompt_eval_count": 1, "eval_count": 1})
+            if last.get("images"):
+                images = sum(1 for i in last["images"] if i.startswith("iVBOR"))
+                self.send({"message": {"role": "assistant", "content": f"I can see {images} image(s). {last['content'][-80:]}"}, "done": True, "done_reason": "stop", "prompt_eval_count": 1, "eval_count": 1})
                 return
             msg = {"role": "assistant", "content": f"Hello from {model}."}
             if last["role"] == "user" and last["content"].startswith("[Automation"):
                 msg = {"role": "assistant", "content": f"Automation ran with {len(b['messages'])} messages."}
             elif last["role"] == "user" and "save a note" in last["content"]:
-                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"path": "notes.md", "content": "hi"})}}]}
+                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": {"path": "notes.md", "content": "hi"}}}]}
             elif last["role"] == "user" and "escape" in last["content"]:
-                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"path": "../escaped.txt", "content": "pwned"})}}]}
+                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "write_file", "arguments": {"path": "../escaped.txt", "content": "pwned"}}}]}
             elif last["role"] == "user" and "break it" in last["content"]:
-                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"path": "notes.md", "content": "broken"})}}]}
+                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c3", "type": "function", "function": {"name": "write_file", "arguments": {"path": "notes.md", "content": "broken"}}}]}
             elif last["role"] == "user" and "run code" in last["content"]:
                 cmd = "echo ran-in-sandbox > out.txt && cat out.txt && echo nope > ../sandbox-escape.txt"
-                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "run_command", "arguments": json.dumps({"command": cmd})}}]}
+                msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c4", "type": "function", "function": {"name": "run_command", "arguments": {"command": cmd}}}]}
+            elif last["role"] == "user" and "context size" in last["content"]:
+                msg = {"role": "assistant", "content": f"My context is {b.get('options', {}).get('num_ctx')} tokens."}
             elif last["role"] == "tool":
                 msg = {"role": "assistant", "content": f"Tool said: {last['content']}"}
-            if b.get("reasoning_effort") != "none":
-                msg["reasoning"] = f"Thinking about it with {model}."
+            if b.get("think") is not False:
+                msg["thinking"] = f"Thinking about it with {model}."
             time.sleep(0.2)
-            self.send({"choices": [{"message": msg}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
+            self.send({"message": msg, "done": True, "done_reason": "length" if "cut off" in str(last.get("content")) else "stop", "prompt_eval_count": 10, "eval_count": 5})
         else:
             self.send({"error": "not found"}, 404)
 
