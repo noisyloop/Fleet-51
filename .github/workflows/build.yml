@@ -115,6 +115,13 @@ jobs:
           $app = "$env:LOCALAPPDATA\Programs\Fleet-51"
           & "$app\fleet51.exe" --version
           Start-Process "$app\fleet51-app.exe"
+          # A first launch must open the window, not just start the service.
+          $window = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            if (Get-Process fleet51-app -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }) { $window = $true; break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $window) { Write-Output "The Fleet-51 window did not open"; exit 1 }
           # No Ollama on the runner: the app must download the pinned build, verify it and start it.
           $status = ""
           for ($i = 0; $i -lt 300; $i++) {

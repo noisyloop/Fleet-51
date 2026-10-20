@@ -61,9 +61,22 @@ mod app {
     /// Start (or reuse) the background service and get the chat's address, token included.
     fn start_service() -> Result<String> {
         let svc = service()?;
-        let up = quiet(&svc, &["up"]).output().context("starting Fleet-51")?;
-        if !up.status.success() {
-            bail!("{}", String::from_utf8_lossy(&up.stderr).trim());
+        // `up` starts the service, which inherits whatever `up` writes to. Through a pipe, this
+        // window would wait for the service to exit before opening; a file is never waited on.
+        let log_path = std::env::temp_dir().join("fleet51-up.log");
+        let log = std::fs::File::create(&log_path).context("starting Fleet-51")?;
+        let up = quiet(&svc, &["up"])
+            .stdout(Stdio::null())
+            .stderr(log)
+            .status()
+            .context("starting Fleet-51")?;
+        if !up.success() {
+            bail!(
+                "{}",
+                std::fs::read_to_string(&log_path)
+                    .unwrap_or_default()
+                    .trim()
+            );
         }
         let url = quiet(&svc, &["url"]).output()?;
         let url = String::from_utf8_lossy(&url.stdout).trim().to_string();
