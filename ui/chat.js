@@ -119,6 +119,7 @@ let defaultModel = 'qwen3:1.7b';
 let lastSeq = 0;
 let online = true;
 let memoryGb = null;
+let build = null; // the service's build when this page loaded; a newer one means reload
 let freeBytes = null; // free disk space where models go, if known
 let keepFree = 2e9; // Fleet-51 never lets a download leave less than this free
 let sandbox = false;
@@ -483,6 +484,9 @@ async function loadModels() {
   renderModelSelect();
   renderSetup();
 }
+async function cancelDownload(name) {
+  try { await api('/api/models/cancel', { name }); } catch (e) { toast(e.message); }
+}
 async function download(name) {
   name = name.trim();
   if (!name) return;
@@ -499,7 +503,7 @@ function renderModelsDialog() {
   const have = (n) => installed.some((m) => m.name === n || m.name === n + ':latest');
   const row = (name, sub, action) => {
     const p = pulls.get(name);
-    return el('div', { class: 'mrow' }, el('b', { text: name }), action, el('div', { class: 'sub', text: p && !p.done ? `${p.status} · ${pct(p)}%` : p && p.error ? `Failed: ${p.error}` : sub }), p && !p.done ? el('div', { class: 'bar' }, el('div', { style: `width:${pct(p)}%` })) : null);
+    return el('div', { class: 'mrow' }, el('b', { text: name }), action, el('div', { class: 'sub', text: p && !p.done ? `${p.status} · ${pct(p)}%` : p && p.error && p.error !== 'cancelled' ? `Failed: ${p.error}` : sub }), p && !p.done ? el('div', { class: 'bar' }, el('div', { style: `width:${pct(p)}%` })) : null);
   };
   const shown = suggested.filter((s) => !have(s.name) && match(`${s.name} ${s.note}`));
   const exact = q && !installed.some((m) => m.name === modelQuery) && !suggested.some((s) => s.name === modelQuery);
@@ -521,7 +525,10 @@ function renderModelsDialog() {
       shown.length ? shown.map((s) => {
         const p = pulls.get(s.name);
         const ok = fits(s.bytes);
-        return row(s.name, ok ? `${s.size} · ${s.note}` : `${s.size} · too big for the ${gb(freeBytes)} free here (Fleet-51 keeps ${gb(keepFree)} free)`, el('button', { type: 'button', class: 'pill', disabled: (p && !p.done) || !online || !ok, onclick: () => download(s.name) }, p && !p.done ? 'Downloading…' : ok ? 'Download' : 'Too big'));
+        const busy = p && !p.done;
+        return row(s.name, ok ? `${s.size} · ${s.note}` : `${s.size} · too big for the ${gb(freeBytes)} free here (Fleet-51 keeps ${gb(keepFree)} free)`, busy
+          ? el('button', { type: 'button', class: 'pill', onclick: () => cancelDownload(s.name) }, 'Cancel')
+          : el('button', { type: 'button', class: 'pill', disabled: !online || !ok, onclick: () => download(s.name) }, ok ? 'Download' : 'Too big'));
       }) : el('div', { class: 'muted', text: q ? 'No suggested model matches.' : 'You have them all.' })),
     el('a', { class: 'browse', href: `https://ollama.com/search${q ? '?q=' + encodeURIComponent(modelQuery) : ''}`, target: '_blank', rel: 'noopener' }, `Browse all models on ollama.com${q ? ` for “${modelQuery}”` : ''} ↗`)].filter(Boolean));
 }
@@ -746,7 +753,7 @@ function renderSetup() {
   $('#engine-bar').style.width = runtime.state === 'downloading' && runtime.total ? `${(runtime.completed * 100) / runtime.total}%` : ready ? '100%' : '0%';
   $('#setup-retry').hidden = runtime.state !== 'failed';
   const active = [...pulls.values()].find((p) => !p.done);
-  const failed = [...pulls.values()].filter((p) => p.done && p.error).pop();
+  const failed = [...pulls.values()].filter((p) => p.done && p.error && p.error !== 'cancelled').pop();
   const mod = $('#step-model');
   mod.classList.toggle('done', installed.length > 0);
   mod.classList.toggle('fail', !active && !!failed);
@@ -755,6 +762,8 @@ function renderSetup() {
     : active ? `${active.name} · ${active.status}${active.total ? ' · ' + pct(active) + '%' : ''}`
     : `${failed ? `${failed.name}: ${failed.error} ` : ''}Choose a model to download.${free}`;
   $('#model-bar').parentElement.hidden = !active;
+  $('#model-cancel').hidden = !active;
+  $('#model-cancel').onclick = () => active && cancelDownload(active.name);
   $('#model-bar').style.width = active ? `${pct(active)}%` : '0%';
   const choices = ready && !active ? FIRST_CHOICES.map((n) => suggested.find((s) => s.name === n)).filter(Boolean) : [];
   $('#model-choices').replaceChildren(...choices.map((s, i) => {
@@ -763,11 +772,12 @@ function renderSetup() {
       el('b', { text: `${s.name}${i === 0 ? ' · recommended' : ''}` }),
       el('span', { class: 'sub', text: ok ? `${s.size} · ${s.note}` : `${s.size} · too big for the free space here` }));
   }));
-  $('#setup-skip').hidden = !ready || !!active;
+  // Always a way out: skip now, choose (or keep downloading) a model later in Models.
+  $('#setup-skip').hidden = false;
 }
 // After skipping setup without a model: a reminder above the chat, with the way to get one.
 function renderNoModel() {
-  $('#nomodel-tip').hidden = !(runtime.state === 'ready' && !installed.length && store.get('setup-skipped', false));
+  $('#nomodel-tip').hidden = !(!installed.length && store.get('setup-skipped', false));
 }
 
 // ---- live updates ----------------------------------------------------------------------
@@ -795,6 +805,7 @@ async function boot() {
   try {
     const r = await api('/api/runtime');
     runtime = r.runtime;
+    build = r.build;
     defaultModel = r.default_model;
     setOnline(r.online !== false);
     memoryGb = r.memory_gb;
@@ -813,7 +824,7 @@ async function boot() {
     if (msg.kind === 'pull') {
       pulls.set(msg.name, msg);
       if (msg.done) maybeSwitchAfterUpgrade(msg);
-      if (msg.done) { loadModels(); if (msg.error) toast(`${msg.name}: ${msg.error}`); }
+      if (msg.done) { loadModels(); if (msg.error && msg.error !== 'cancelled') toast(`${msg.name}: ${msg.error}`); }
       renderSetup(); renderModelSelect(); renderModelsDialog();
       return;
     }
@@ -822,7 +833,10 @@ async function boot() {
     if (msg.kind === 'notice') { toast(`${msg.title}: ${msg.body.slice(0, 120)}`); return; }
     if (msg.kind === 'network') setOnline(msg.online);
   };
-  es.onopen = () => { refresh().catch(() => {}); if (current) api(`/api/bots/${current}/messages?since=${lastSeq}`).then((evs) => evs.forEach(render)).catch(() => {}); };
+  es.onopen = () => {
+    // After an update the new service takes over on the same address: load its interface.
+    api('/api/runtime').then((r) => { if (build && r.build && r.build !== build) location.reload(); }).catch(() => {});
+    refresh().catch(() => {}); if (current) api(`/api/bots/${current}/messages?since=${lastSeq}`).then((evs) => evs.forEach(render)).catch(() => {}); };
 }
 
 // ---- wiring -----------------------------------------------------------------------------------

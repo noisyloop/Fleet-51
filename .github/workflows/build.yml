@@ -74,6 +74,40 @@ jobs:
           screencapture -x dist/screens/app-window.png || echo "screenshot not permitted on this runner"
           "$APP/Contents/Resources/fleet51" down || true
           pkill -f "Fleet-51.app/Contents/MacOS/Fleet-51" || true
+      - name: Update while the app is running; the new version takes over
+        run: |
+          install_app() {
+            hdiutil attach dist/Fleet-51-macos.dmg -mountpoint /tmp/f51 -nobrowse >/dev/null
+            rm -rf /Applications/Fleet-51.app && cp -R /tmp/f51/Fleet-51.app /Applications/
+            hdiutil detach /tmp/f51 >/dev/null
+          }
+          F=/Applications/Fleet-51.app/Contents/Resources/fleet51
+          health() { U=$("$F" url); curl -s -H "Authorization: Bearer $(cat ~/.fleet51/token)" "${U%%\?*}api/health"; }
+          # An "older" copy: the build id includes the program's date.
+          install_app
+          touch -t 202601010000 "$F"
+          open /Applications/Fleet-51.app
+          for i in $(seq 90); do "$F" status 2>/dev/null | grep -q "models: ready" && break; sleep 2; done
+          OLD=$(health | python3 -c 'import json,sys; print(json.load(sys.stdin)["build"])')
+          echo "running: $OLD"
+          # Drag the new app over it, as from the .dmg; the old one keeps running.
+          install_app
+          NEW=""
+          for i in $(seq 30); do
+            sleep 1
+            NEW=$(health 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["build"])' 2>/dev/null || true)
+            [ -n "$NEW" ] && [ "$NEW" != "$OLD" ] && break
+          done
+          echo "after the update: $NEW (${i}s)"
+          [ -n "$NEW" ] && [ "$NEW" != "$OLD" ] || { cat ~/.fleet51/daemon.log; exit 1; }
+          # Opening it again shows the new interface.
+          open /Applications/Fleet-51.app
+          sleep 5
+          U=$("$F" url); curl -s "${U%%\?*}" | grep -q 'id="model-cancel"' || { echo "the old interface is still served"; exit 1; }
+          mkdir -p dist/screens
+          screencapture -x dist/screens/mac-after-update.png || echo "screenshot not permitted on this runner"
+          "$F" down || true
+          pkill -f "Fleet-51.app/Contents/MacOS/Fleet-51" || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -139,6 +173,52 @@ jobs:
           Get-Process fleet51-app
           & "$app\fleet51.exe" down
           Stop-Process -Name fleet51-app -ErrorAction SilentlyContinue
+      - name: Install over a running older version; the new one takes over
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $app = "$env:LOCALAPPDATA\Programs\Fleet-51"
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          gh release download --repo $env:GITHUB_REPOSITORY --pattern Fleet-51-windows-setup.exe --dir prev
+          Start-Process prev\Fleet-51-windows-setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          Start-Process "$app\fleet51-app.exe"
+          for ($i = 0; $i -lt 90; $i++) { if ((& "$app\fleet51.exe" status 2>$null) -match "models: ready") { break }; Start-Sleep -Seconds 2 }
+          & "$app\fleet51.exe" status
+          # Install this build while the older one runs, then open it as a person would.
+          Start-Process dist\Fleet-51-windows-setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          Start-Process "$app\fleet51-app.exe"
+          $status = ""
+          for ($i = 0; $i -lt 60; $i++) {
+            $status = (& "$app\fleet51.exe" status 2>$null) -join "`n"
+            if ($status -match "Fleet-51 $([regex]::Escape($v)) ") { break }
+            Start-Sleep -Seconds 1
+          }
+          $status
+          if ($status -notmatch "Fleet-51 $([regex]::Escape($v)) ") { Get-Content "$env:USERPROFILE\.fleet51\daemon.log"; throw "the new version did not take over" }
+          $window = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            if (Get-Process fleet51-app -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 }) { $window = $true; break }
+            Start-Sleep -Seconds 1
+          }
+          if (-not $window) { throw "the Fleet-51 window did not open" }
+          $url = (& "$app\fleet51.exe" url).Split('?')[0]
+          if ((Invoke-WebRequest $url -UseBasicParsing).Content -notmatch 'id="model-cancel"') { throw "the old interface is still served" }
+          Start-Sleep -Seconds 5
+          New-Item -ItemType Directory -Force dist\screens | Out-Null
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("dist\screens\windows-after-update.png")
+          & "$app\fleet51.exe" down
+          Stop-Process -Name fleet51-app -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-screenshot
+          path: dist/screens
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: Fleet-51-windows

@@ -174,6 +174,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
             if let w = windows.first { w.window.makeKeyAndOrderFront(nil) } else { openWindow(url: nil) }
+            // Fleet-51 may have been updated while this app stayed open in the background (a new
+            // copy dragged into Applications): start the current service and reload its interface.
+            connect()
         }
         return true
     }

@@ -64,6 +64,7 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/runtime/retry", post(runtime_retry))
         .route("/api/models", get(models))
         .route("/api/models/pull", post(pull_model))
+        .route("/api/models/cancel", post(cancel_pull))
         .route("/api/models/delete", post(delete_model))
         .route("/api/bots", get(list_bots).post(create_bot))
         .route("/api/bots/{id}/messages", get(history).post(send))
@@ -174,7 +175,7 @@ async fn auth(State(d): D, req: Request, next: Next) -> Response {
 
 async fn health(State(d): D) -> Json<Value> {
     Json(
-        json!({"name": "Fleet-51", "version": env!("CARGO_PKG_VERSION"), "build": crate::daemon::build_id(),
+        json!({"name": "Fleet-51", "version": env!("CARGO_PKG_VERSION"), "build": crate::daemon::running_build(),
         "generation": d.generation, "pid": std::process::id(), "url": d.url}),
     )
 }
@@ -182,7 +183,7 @@ async fn health(State(d): D) -> Json<Value> {
 async fn runtime(State(d): D) -> Json<Value> {
     let r = d.runtime.lock().unwrap().clone();
     Json(
-        json!({"runtime": r, "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "sandbox": crate::sandbox::available().is_some(), "run_code": crate::sandbox::for_code().is_some(), "default_model": crate::runtime::DEFAULT_MODEL, "memory_gb": crate::runtime::memory_gb(), "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
+        json!({"runtime": r, "build": crate::daemon::running_build(), "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "sandbox": crate::sandbox::available().is_some(), "run_code": crate::sandbox::for_code().is_some(), "default_model": crate::runtime::DEFAULT_MODEL, "memory_gb": crate::runtime::memory_gb(), "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
     )
 }
 
@@ -427,6 +428,11 @@ async fn pull_model(State(d): D, Json(m): Json<ModelName>) -> R<Value> {
     Ok(Json(json!({"pulling": m.name.trim()})))
 }
 
+async fn cancel_pull(State(d): D, Json(m): Json<ModelName>) -> Json<Value> {
+    d.cancel_pull(m.name.trim());
+    Json(json!({"cancelling": m.name.trim()}))
+}
+
 async fn delete_model(Json(m): Json<ModelName>) -> R<Value> {
     if !crate::models::valid_name(&m.name) {
         return Err(anyhow::anyhow!("not a valid model name").into());
@@ -475,9 +481,16 @@ async fn delete_automation(State(d): D, Path(id): Path<String>) -> R<Value> {
 }
 
 async fn stream(State(d): D) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let s = BroadcastStream::new(d.global.subscribe())
+    let events = BroadcastStream::new(d.global.subscribe())
         .filter_map(|r| r.ok())
-        .map(|v| Ok(SseEvent::default().data(serde_json::to_string(&v).unwrap_or_default())));
+        .map(|v| Some(SseEvent::default().data(serde_json::to_string(&v).unwrap_or_default())));
+    // The stream ends when the service shuts down (an update taking over); the app reconnects.
+    let closing = tokio_stream::wrappers::WatchStream::new(d.closing.subscribe())
+        .filter_map(|closing| closing.then_some(None));
+    let s = events
+        .merge(closing)
+        .take_while(Option::is_some)
+        .map(|e| Ok(e.unwrap_or_default()));
     Sse::new(s).keep_alive(KeepAlive::default())
 }
 
@@ -485,7 +498,7 @@ async fn shutdown(State(d): D) -> Json<Value> {
     let d2 = d.clone();
     tokio::spawn(async move {
         d2.suspend_all().await;
-        d2.stop.notify_one();
+        d2.shut_down();
     });
     Json(json!({"ok": true, "generation": d.generation}))
 }

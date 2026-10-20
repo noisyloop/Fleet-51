@@ -32,6 +32,13 @@ pub fn read_info(home: &Home) -> Option<DaemonInfo> {
         .and_then(|t| serde_json::from_str(&t).ok())
 }
 
+/// The build this process started as (`build_id` reads the file on disk, which an update can
+/// replace while the service keeps running).
+pub fn running_build() -> String {
+    static STARTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STARTED.get_or_init(build_id).clone()
+}
+
 /// Identifies this exact binary, so `fleet51 up` can tell an older daemon is still running.
 pub fn build_id() -> String {
     let stamp = std::env::current_exe()
@@ -68,7 +75,11 @@ pub struct Daemon {
     pub sessions: RwLock<HashMap<String, Arc<Session>>>,
     pub global: broadcast::Sender<Live>,
     pub stop: Notify,
+    /// Set when shutting down, so live streams to the app end and the shutdown isn't held up.
+    pub closing: tokio::sync::watch::Sender<bool>,
     pub pulls: Mutex<HashMap<String, Pull>>,
+    /// Downloads the user cancelled; each stops at its next progress report.
+    pub cancelled: Mutex<std::collections::HashSet<String>>,
     pub runtime: Mutex<Runtime>,
     pub ollama: Mutex<Option<std::process::Child>>,
     pub automations: crate::automations::Automations,
@@ -269,6 +280,19 @@ impl Daemon {
         }
     }
 
+    /// Stop a download in progress (Ollama keeps what it has, so starting it again resumes).
+    pub fn cancel_pull(&self, name: &str) {
+        if self
+            .pulls
+            .lock()
+            .unwrap()
+            .get(name)
+            .is_some_and(|p| !p.done)
+        {
+            self.cancelled.lock().unwrap().insert(name.to_string());
+        }
+    }
+
     /// Start downloading a model in the background; progress goes out on the live stream.
     pub fn pull_model(self: &Arc<Self>, name: &str) -> Result<()> {
         if !crate::models::valid_name(name) {
@@ -279,6 +303,7 @@ impl Daemon {
             if pulls.get(name).is_some_and(|p| !p.done) {
                 return Ok(());
             }
+            self.cancelled.lock().unwrap().remove(name);
             let p = Pull {
                 name: name.into(),
                 status: "starting".into(),
@@ -305,6 +330,9 @@ impl Daemon {
             let mut parts = std::collections::HashMap::new();
             let result = fits.and_then(|()| {
                 crate::models::pull(&name, |p| {
+                    if d.cancelled.lock().unwrap().remove(&name) {
+                        anyhow::bail!("cancelled");
+                    }
                     if size.is_none() && p.total > 0 && p.status.starts_with("pulling ") {
                         parts.insert(p.status.clone(), p.total);
                         let seen: u64 = parts.values().sum();
@@ -376,6 +404,12 @@ impl Daemon {
                 }),
             }
         });
+    }
+
+    /// Stop serving: end the app's live streams, then let the server finish.
+    pub fn shut_down(&self) {
+        let _ = self.closing.send(true);
+        self.stop.notify_one();
     }
 
     pub async fn suspend_all(&self) {
@@ -464,6 +498,7 @@ async fn hand_off(home: &Home, token: &str) -> u64 {
 }
 
 pub async fn serve(home: Home, listen: &str) -> Result<()> {
+    running_build();
     home.ensure()?;
     let token = home.token()?;
     let generation = hand_off(&home, &token).await;
@@ -495,7 +530,9 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
         sessions: RwLock::new(HashMap::new()),
         global,
         stop: Notify::new(),
+        closing: tokio::sync::watch::channel(false).0,
         pulls: Mutex::new(HashMap::new()),
+        cancelled: Mutex::new(std::collections::HashSet::new()),
         runtime: Mutex::new(Runtime::Checking),
         ollama: Mutex::new(None),
         automations: crate::automations::Automations::load(&home),
@@ -528,16 +565,31 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
         }
     }
 
-    // Only one generation may run: exit if a newer one has taken over.
+    // Only one generation may run: exit if a newer one has taken over. And when an update has
+    // replaced this program on disk (dragging a new Fleet-51.app over a running one), start the
+    // new one, which takes over: an app left running in the background never has to restart.
     {
         let d = d.clone();
+        let listen = listen.to_string();
         tokio::spawn(async move {
+            let mut updating = false;
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 if read_info(&d.home).is_some_and(|i| i.generation > d.generation) {
                     d.suspend_all().await;
-                    d.stop.notify_one();
+                    d.shut_down();
                     return;
+                }
+                if !updating && d.exe.is_file() && build_id() != running_build() {
+                    updating = true;
+                    eprintln!("fleet51: a new version was installed; handing over to it");
+                    let mut up = std::process::Command::new(&d.exe);
+                    up.args(["up", "--listen", &listen])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null());
+                    crate::home::no_window(&mut up);
+                    let _ = up.spawn();
                 }
             }
         });
