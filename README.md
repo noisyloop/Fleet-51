@@ -2,6 +2,15 @@
 
 <h1 align="center">Fleet-51</h1>
 
+<p align="center">
+  <a href="https://github.com/noisyloop/Fleet-51/actions/workflows/build.yml"><img src="https://github.com/noisyloop/Fleet-51/actions/workflows/build.yml/badge.svg?branch=main" alt="Build status"></a>
+  <a href="https://github.com/noisyloop/Fleet-51/releases/latest"><img src="https://img.shields.io/github/v/release/noisyloop/Fleet-51?label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" alt="macOS and Windows">
+  <img src="https://img.shields.io/badge/runs-100%25%20local-brightgreen" alt="Runs 100% local">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/push-%2351-8a2be2" alt="Push #51">
+</p>
+
 <p align="center"><b>Your own fleet of alien AI bots, running privately on your computer.</b><br>
 Create a bot, give it a name and a face, pick a free model, and chat. Run as many as you like at once.</p>
 
@@ -17,6 +26,14 @@ no subscription, no usage limit, and it keeps working on a plane.
 | Create a bot | On a phone |
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
+
+## What's new in 0.5.0
+
+- **Replies finish properly:** bots get a full-size context window, so long answers no longer stop
+  part way and the chat doesn't get stuck.
+- **Windows app:** its own window, an installer and an automated build.
+- **Files and code stay put:** what a bot writes goes into its own folder (named after the bot), and
+  nothing it makes is run automatically.
 
 ## What it does
 
