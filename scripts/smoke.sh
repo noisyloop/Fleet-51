@@ -106,7 +106,14 @@ api "/api/bots/$SCOUT/messages" '{"text":"break it"}' >/dev/null
 wait_for "$SCOUT" "e['type']=='text' and 'wrote notes.md' in e['text'] and e['seq']>$(api "/api/bots/$SCOUT/messages" | json "max(x['seq'] for x in d if x['type']=='checkpoint')")"
 [ "$(cat "$FLEET51_BOTS_DIR/Scout/notes.md")" = "broken" ] || fail "notes.md not overwritten"
 CK=$(api "/api/bots/$SCOUT/messages" | json "[e['id'] for e in d if e['type']=='checkpoint'][-1]")
-api "/api/bots/$SCOUT/undo" "{\"checkpoint\":\"$CK\"}" | grep -q '"ok":true' || fail "undo refused"
+# The reply's text can arrive a moment before the bot finishes its turn, and undo waits for that.
+UNDONE=""
+for _ in $(seq 50); do
+  OUT=$(api "/api/bots/$SCOUT/undo" "{\"checkpoint\":\"$CK\"}")
+  echo "$OUT" | grep -q '"ok":true' && { UNDONE=1; break; }
+  sleep 0.2
+done
+[ -n "$UNDONE" ] || fail "undo refused: $OUT"
 [ "$(cat "$FLEET51_BOTS_DIR/Scout/notes.md")" = "hi" ] || fail "undo did not restore notes.md"
 wait_for "$SCOUT" "e['type']=='undone'"
 
@@ -185,6 +192,13 @@ for _ in $(seq 50); do api /api/health >/dev/null 2>&1 && break; sleep 0.2; done
 LAST=$(api "/api/bots/$SCOUT/messages" | json "d[-1]['seq']")
 api "/api/bots/$SCOUT/messages" '{"text":"still there?"}' >/dev/null
 wait_for "$SCOUT" "e['type']=='text' and e['text'].startswith('Hello') and e['seq']>$LAST"
+
+step "Models: free space is known, and a bot on a missing model takes the next one downloaded"
+[ "$(api /api/models | json "d['free_bytes'] > 0 and all(s['bytes'] for s in d['suggested'])")" = "True" ] || fail "free space or model sizes missing"
+api "/api/bots/$SCOUT/model" '{"model":"not-downloaded:1b"}' >/dev/null
+api /api/models/pull '{"name":"tinydolphin"}' >/dev/null
+for _ in $(seq 100); do [ "$(api /api/bots | json "[b['model'] for b in d if b['id']=='$SCOUT'][0]")" = "tinydolphin" ] && break; sleep 0.2; done
+[ "$(api /api/bots | json "[b['model'] for b in d if b['id']=='$SCOUT'][0]")" = "tinydolphin" ] || fail "the bot did not switch to the downloaded model"
 
 step "Delete a bot"
 api "/api/bots/$FLEET/delete" '{}' >/dev/null

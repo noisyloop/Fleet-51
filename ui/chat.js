@@ -119,6 +119,8 @@ let defaultModel = 'qwen3:1.7b';
 let lastSeq = 0;
 let online = true;
 let memoryGb = null;
+let freeBytes = null; // free disk space where models go, if known
+let keepFree = 2e9; // Fleet-51 never lets a download leave less than this free
 let sandbox = false;
 let canRunCode = false; // on Windows, without a sandbox yet
 let autos = [];
@@ -466,11 +468,16 @@ async function createBot(ev) {
 
 // ---- models ------------------------------------------------------------------------
 function pct(p) { return p.total ? Math.floor((p.completed * 100) / p.total) : 0; }
+const gb = (b) => `${(b / 1e9).toFixed(1)} GB`;
+// Would a download of this size leave enough free space? Unknown sizes are checked as they download.
+function fits(bytes) { return bytes == null || freeBytes == null || bytes + keepFree <= freeBytes; }
 async function loadModels() {
   try {
     const m = await api('/api/models');
     installed = m.installed || [];
     suggested = m.suggested || [];
+    freeBytes = m.free_bytes ?? null;
+    keepFree = m.keep_free_bytes || keepFree;
     for (const p of m.pulls || []) pulls.set(p.name, p);
   } catch { /* engine not ready yet */ }
   renderModelSelect();
@@ -479,7 +486,7 @@ async function loadModels() {
 async function download(name) {
   name = name.trim();
   if (!name) return;
-  try { await api('/api/models/pull', { name }); pulls.set(name, { name, status: 'starting', completed: 0, total: 0, done: false }); renderModelsDialog(); } catch (e) { toast(e.message); }
+  try { await api('/api/models/pull', { name }); pulls.set(name, { name, status: 'starting', completed: 0, total: 0, done: false }); renderModelsDialog(); renderSetup(); } catch (e) { toast(e.message); }
 }
 // Models dialog: a find box that filters both lists as you type, and downloads by exact name.
 let modelQuery = '';
@@ -510,9 +517,11 @@ function renderModelsDialog() {
     el('div', { class: 'model-list' }, el('h3', { text: 'On this computer' }),
       mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
     el('div', { class: 'model-list' }, el('h3', { text: 'Free models to download' }),
+      freeBytes != null ? el('div', { class: 'muted', text: `${gb(freeBytes)} free on this computer.` }) : null,
       shown.length ? shown.map((s) => {
         const p = pulls.get(s.name);
-        return row(s.name, `${s.size} · ${s.note}`, el('button', { type: 'button', class: 'pill', disabled: (p && !p.done) || !online, onclick: () => download(s.name) }, p && !p.done ? 'Downloading…' : 'Download'));
+        const ok = fits(s.bytes);
+        return row(s.name, ok ? `${s.size} · ${s.note}` : `${s.size} · too big for the ${gb(freeBytes)} free here (Fleet-51 keeps ${gb(keepFree)} free)`, el('button', { type: 'button', class: 'pill', disabled: (p && !p.done) || !online || !ok, onclick: () => download(s.name) }, p && !p.done ? 'Downloading…' : ok ? 'Download' : 'Too big'));
       }) : el('div', { class: 'muted', text: q ? 'No suggested model matches.' : 'You have them all.' })),
     el('a', { class: 'browse', href: `https://ollama.com/search${q ? '?q=' + encodeURIComponent(modelQuery) : ''}`, target: '_blank', rel: 'noopener' }, `Browse all models on ollama.com${q ? ` for “${modelQuery}”` : ''} ↗`)].filter(Boolean));
 }
@@ -701,11 +710,12 @@ function renderUpgrade() {
   const b = bot();
   const have = installed.some((m) => m.name === UPGRADE);
   const p = pulls.get(UPGRADE);
-  const show = b && b.model === defaultModel && !have && (memoryGb == null || memoryGb >= 8) && !store.get('upgrade-dismissed', false) && runtime.state === 'ready' && installed.length > 0;
+  const size = (suggested.find((s) => s.name === UPGRADE) || {}).bytes;
+  const show = b && b.model === defaultModel && !have && (memoryGb == null || memoryGb >= 8) && fits(size) && !store.get('upgrade-dismissed', false) && runtime.state === 'ready' && installed.length > 0;
   $('#upgrade-tip').hidden = !show;
   if (!show) return;
   const busy = p && !p.done;
-  $('#upgrade-text').textContent = busy ? `Downloading ${UPGRADE}… ${pct(p)}%` : `Want smarter answers, especially for files and code? ${UPGRADE} (2.5 GB) is a big step up from ${defaultModel}${memoryGb ? ` and fits your ${memoryGb} GB Mac` : ''}.`;
+  $('#upgrade-text').textContent = busy ? `Downloading ${UPGRADE}… ${pct(p)}%` : `Want smarter answers, especially for files and code? ${UPGRADE} (2.5 GB) is a big step up from ${defaultModel}${memoryGb ? ` and fits your computer's ${memoryGb} GB of memory` : ''}.`;
   $('#upgrade-yes').hidden = busy;
 }
 async function maybeSwitchAfterUpgrade(p) {
@@ -718,12 +728,14 @@ async function maybeSwitchAfterUpgrade(p) {
 }
 
 // ---- first-run setup -------------------------------------------------------------------
+// The first models offered, recommended first; the user picks one (or skips and picks later).
+const FIRST_CHOICES = ['qwen3:1.7b', 'qwen2.5-coder:1.5b', 'qwen3:0.6b'];
 function renderSetup() {
   const ready = runtime.state === 'ready';
-  const firstPull = pulls.get(defaultModel);
   const needModel = ready && !installed.length;
-  const show = !ready || needModel;
+  const show = !ready || (needModel && !store.get('setup-skipped', false));
   $('#setup').hidden = !show;
+  renderNoModel();
   if (!show) return;
   $('#setup-avatar').replaceChildren(el('img', { src: '/icon.svg', alt: '', width: 96, height: 96 }));
   const eng = $('#step-engine');
@@ -732,12 +744,30 @@ function renderSetup() {
   const sub = { checking: 'Looking for Ollama…', downloading: `Downloading Ollama ${runtime.total ? Math.round(runtime.completed / 1e6) + ' of ' + Math.round(runtime.total / 1e6) + ' MB' : ''}`, starting: 'Starting Ollama (the first start can take a minute or two)…', ready: runtime.source === 'system' ? 'Using the Ollama already on this computer' : 'Ready', failed: runtime.message }[runtime.state] || '';
   $('#engine-sub').textContent = sub;
   $('#engine-bar').style.width = runtime.state === 'downloading' && runtime.total ? `${(runtime.completed * 100) / runtime.total}%` : ready ? '100%' : '0%';
-  $('#setup-retry').hidden = runtime.state !== 'failed' && !(firstPull && firstPull.error);
+  $('#setup-retry').hidden = runtime.state !== 'failed';
+  const active = [...pulls.values()].find((p) => !p.done);
+  const failed = [...pulls.values()].filter((p) => p.done && p.error).pop();
   const mod = $('#step-model');
   mod.classList.toggle('done', installed.length > 0);
-  mod.classList.toggle('fail', !!(firstPull && firstPull.error));
-  $('#model-sub').textContent = !ready ? `Waiting for the engine (then ${defaultModel}, about 1.4 GB)` : firstPull ? (firstPull.error ? firstPull.error : `${defaultModel} · ${firstPull.status}${firstPull.total ? ' · ' + pct(firstPull) + '%' : ''}`) : `Preparing ${defaultModel}…`;
-  $('#model-bar').style.width = firstPull ? `${pct(firstPull)}%` : '0%';
+  mod.classList.toggle('fail', !active && !!failed);
+  const free = freeBytes != null ? ` ${gb(freeBytes)} is free on this computer.` : '';
+  $('#model-sub').textContent = !ready ? 'Once the engine is ready, choose which model to download.'
+    : active ? `${active.name} · ${active.status}${active.total ? ' · ' + pct(active) + '%' : ''}`
+    : `${failed ? `${failed.name}: ${failed.error} ` : ''}Choose a model to download.${free}`;
+  $('#model-bar').parentElement.hidden = !active;
+  $('#model-bar').style.width = active ? `${pct(active)}%` : '0%';
+  const choices = ready && !active ? FIRST_CHOICES.map((n) => suggested.find((s) => s.name === n)).filter(Boolean) : [];
+  $('#model-choices').replaceChildren(...choices.map((s, i) => {
+    const ok = fits(s.bytes);
+    return el('button', { type: 'button', class: 'choice', disabled: !ok || !online, onclick: () => download(s.name) },
+      el('b', { text: `${s.name}${i === 0 ? ' · recommended' : ''}` }),
+      el('span', { class: 'sub', text: ok ? `${s.size} · ${s.note}` : `${s.size} · too big for the free space here` }));
+  }));
+  $('#setup-skip').hidden = !ready || !!active;
+}
+// After skipping setup without a model: a reminder above the chat, with the way to get one.
+function renderNoModel() {
+  $('#nomodel-tip').hidden = !(runtime.state === 'ready' && !installed.length && store.get('setup-skipped', false));
 }
 
 // ---- live updates ----------------------------------------------------------------------
@@ -862,6 +892,8 @@ $('#model-select').onchange = async (e) => {
   if (!b || v === b.model) return;
   try { Object.assign(b, await api(`/api/bots/${b.id}/model`, { model: v })); renderModelSelect(); } catch (err) { toast(err.message); renderModelSelect(); }
 };
-$('#setup-retry').onclick = () => { const p = pulls.get(defaultModel); if (p && p.error) download(defaultModel); else api('/api/runtime/retry', {}).catch(() => {}); };
+$('#setup-retry').onclick = () => api('/api/runtime/retry', {}).catch(() => {});
+$('#setup-skip').onclick = () => { store.set('setup-skipped', true); renderSetup(); $('#btn-models').click(); };
+$('#nomodel-open').onclick = () => $('#btn-models').click();
 document.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n' && !e.shiftKey) { e.preventDefault(); openNewBot(); } });
 boot();

@@ -27,6 +27,15 @@ no subscription, no usage limit, and it keeps working on a plane.
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
 
+## What's new in 0.5.4
+
+- **You choose the first model.** Setup lists a few small models with their sizes and your free
+  disk space (qwen3:1.7b is recommended; qwen3:0.6b is only 0.5 GB). Nothing is downloaded until
+  you pick one, and **Skip for now** goes straight to the app and its **Models** list.
+- **Downloads never fill your disk.** Fleet-51 checks a model's size against your free space before
+  downloading and always keeps 2 GB free; models that don't fit are marked "too big".
+- The first bot switches to whichever model you download first.
+
 ## What's new in 0.5.3
 
 - **Windows: the app opens right after installing.** Before, the first launch started Fleet-51 in
@@ -93,11 +102,12 @@ no subscription, no usage limit, and it keeps working on a plane.
 4. Open Fleet-51. The first launch sets everything up by itself:
    - it uses Ollama if you already have it; otherwise it downloads Ollama (about 175 MB) and checks it
      against a SHA-256 built into Fleet-51;
-   - it downloads a first model, qwen3:1.7b (about 1.4 GB);
+   - it asks which first model to download (qwen3:1.7b, about 1.4 GB, is recommended; there are
+     smaller ones), showing your free disk space, or you can skip and choose later in **Models**;
    - it opens your first bot, **Fleet**.
 
-   The first model is small so setup is quick. Once it's running, Fleet-51 offers **qwen3:4b**
-   (2.5 GB), which is much better at files and code; any Mac with 8 GB of memory runs it.
+   Once it's running, Fleet-51 offers **qwen3:4b** (2.5 GB) if it fits, which is much better at
+   files and code; any Mac with 8 GB of memory runs it.
 
 Closing the window leaves your bots running in the background. **Fleet-51 › Quit and Stop Bots**
 (⌥⌘Q) stops everything. Updating is just installing a newer `.dmg`; the new version takes over from
@@ -111,7 +121,8 @@ the old one and keeps your bots and chats.
    yet, so Windows may say "Windows protected your PC": choose **More info › Run anyway**.
 3. Fleet-51 opens and sets itself up the first time: it uses Ollama if you have it, otherwise it
    downloads the parts of Ollama it needs (about 40 MB), checks every file against a SHA-256 built
-   into Fleet-51, then downloads the first model (about 1.4 GB).
+   into Fleet-51, then asks which first model to download (from about 0.5 GB), or lets you skip
+   and choose later.
 
 Closing the window leaves your bots running; the alien icon in the system tray reopens it, and
 **Quit and Stop Bots** there stops everything. On Windows, **Run code** isn't sandboxed yet: Windows

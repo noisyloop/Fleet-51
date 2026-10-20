@@ -401,15 +401,20 @@ async fn bot_reveal(State(d): D, Path(id): Path<String>, body: Option<Json<Revea
 async fn models(State(d): D) -> Json<Value> {
     let suggested: Vec<Value> = crate::models::SUGGESTED
         .iter()
-        .map(|(name, size, tools, note)| json!({"name": name, "size": size, "tools": tools, "note": note}))
+        .map(|(name, size, tools, note)| json!({"name": name, "size": size, "bytes": crate::models::size_bytes(size), "tools": tools, "note": note}))
         .collect();
     let pulls: Vec<_> = d.pulls.lock().unwrap().values().cloned().collect();
-    let (installed, error) = match tokio::task::spawn_blocking(crate::models::installed).await {
-        Ok(Ok(m)) => (m, None),
-        Ok(Err(e)) => (vec![], Some(e.to_string())),
-        Err(e) => (vec![], Some(e.to_string())),
+    let found =
+        tokio::task::spawn_blocking(|| (crate::models::installed(), crate::models::free_bytes()))
+            .await;
+    let (installed, error, free) = match found {
+        Ok((Ok(m), free)) => (m, None, free),
+        Ok((Err(e), free)) => (vec![], Some(e.to_string()), free),
+        Err(e) => (vec![], Some(e.to_string()), None),
     };
-    Json(json!({"installed": installed, "suggested": suggested, "pulls": pulls, "error": error}))
+    Json(
+        json!({"installed": installed, "suggested": suggested, "pulls": pulls, "error": error, "free_bytes": free, "keep_free_bytes": crate::models::KEEP_FREE}),
+    )
 }
 
 #[derive(Deserialize)]

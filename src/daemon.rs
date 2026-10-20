@@ -249,6 +249,26 @@ impl Daemon {
         s.send(Cmd::Stop);
     }
 
+    /// Bots set to a model that isn't installed (such as the first bot, made before any model
+    /// was chosen) switch to `name`, which just finished downloading.
+    fn adopt_model(&self, name: &str) {
+        let installed = crate::agent::ollama_models().unwrap_or_default();
+        let have = |m: &str| {
+            installed
+                .iter()
+                .any(|i| i == m || *i == format!("{m}:latest"))
+        };
+        if !have(name) {
+            return;
+        }
+        for s in self.bots() {
+            // No model of its own means the default, which follows what's installed.
+            if s.state().model.is_some_and(|m| !have(&m)) {
+                let _ = self.set_model(&s, name);
+            }
+        }
+    }
+
     /// Start downloading a model in the background; progress goes out on the live stream.
     pub fn pull_model(self: &Arc<Self>, name: &str) -> Result<()> {
         if !crate::models::valid_name(name) {
@@ -274,15 +294,37 @@ impl Daemon {
         let name = name.to_string();
         tokio::task::spawn_blocking(move || {
             let (mut last_pct, mut last_status) = (u64::MAX, String::new());
-            let result = crate::models::pull(&name, |p| {
-                let pct = (p.completed * 100).checked_div(p.total).unwrap_or(0);
-                if pct != last_pct || p.status != last_status {
-                    last_pct = pct;
-                    last_status = p.status.clone();
-                    d.pulls.lock().unwrap().insert(name.clone(), p.clone());
-                    let _ = d.global.send(Live::Pull(p.clone()));
-                }
+            // Never fill the disk: check the size up front when the registry says it, else as
+            // Ollama reports each part of the model.
+            let free = crate::models::free_bytes();
+            let size = crate::models::download_size(&name);
+            let fits = match size {
+                Some(n) => crate::models::check_space(&name, n),
+                None => Ok(()),
+            };
+            let mut parts = std::collections::HashMap::new();
+            let result = fits.and_then(|()| {
+                crate::models::pull(&name, |p| {
+                    if size.is_none() && p.total > 0 && p.status.starts_with("pulling ") {
+                        parts.insert(p.status.clone(), p.total);
+                        let seen: u64 = parts.values().sum();
+                        if free.is_some_and(|f| seen + crate::models::KEEP_FREE > f) {
+                            crate::models::check_space(&name, seen)?;
+                        }
+                    }
+                    let pct = (p.completed * 100).checked_div(p.total).unwrap_or(0);
+                    if pct != last_pct || p.status != last_status {
+                        last_pct = pct;
+                        last_status = p.status.clone();
+                        d.pulls.lock().unwrap().insert(name.clone(), p.clone());
+                        let _ = d.global.send(Live::Pull(p.clone()));
+                    }
+                    Ok(())
+                })
             });
+            if result.is_ok() {
+                d.adopt_model(&name);
+            }
             let mut pulls = d.pulls.lock().unwrap();
             let p = pulls.entry(name.clone()).or_insert_with(|| Pull {
                 name: name.clone(),
@@ -322,9 +364,7 @@ impl Daemon {
             match crate::runtime::ensure(&self.home, &report) {
                 Ok(child) => {
                     *self.ollama.lock().unwrap() = child;
-                    if crate::agent::ollama_models().unwrap_or_default().is_empty() {
-                        let _ = self.pull_model(crate::runtime::DEFAULT_MODEL);
-                    }
+                    // No model is downloaded by itself: the app asks which one fits.
                     if self.bots().is_empty() {
                         if let Err(e) = self.create_bot("Fleet", "cloud", "green") {
                             eprintln!("fleet51: could not create the first bot: {e:#}");
