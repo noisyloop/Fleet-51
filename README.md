@@ -158,3 +158,7 @@ missed while the computer was asleep or off happens when Fleet-51 is next runnin
 ## Coming later
 
 Email notifications, a sandbox for Run code on Windows, a Linux package, and signed builds.
+
+## Attribution to my own project EverythingOS for inspiring the idea with a lot of research on the safety of ai agents and autonomous software/robots.
+
+https://github.com/noisyloop/EverythingOS (MIT licensed)
