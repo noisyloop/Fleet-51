@@ -246,13 +246,21 @@ jobs:
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; ACCEL=kvm; else ACCEL=tcg; fi
           qemu-img create -f qcow2 data.qcow2 8G
           boot() {
+            rm -f qemu.sock
             qemu-system-x86_64 -accel $ACCEL -m 4096 -smp 2 -boot d -cdrom dist/Fleet-51-x86_64.iso \
               -drive file=data.qcow2,if=virtio -nic user,hostfwd=tcp:127.0.0.1:7499-:7499 \
-              -display none -serial file:serial-$1.log -daemonize -pidfile qemu.pid
+              -display none -serial file:serial-$1.log -monitor unix:qemu.sock,server,nowait \
+              -daemonize -pidfile qemu.pid
             for i in $(seq 240); do grep -q "fleet51-token:" serial-$1.log 2>/dev/null && break; sleep 2; done
             tail -40 serial-$1.log
             sed -n 's/.*fleet51-token: \([0-9a-f]*\).*/\1/p' serial-$1.log | tail -1 > token-$1
             [ -s token-$1 ] || { echo "Fleet-51 did not start in the VM"; exit 1; }
+          }
+          # A proper shutdown, as the power button (or VirtualBox's "Send shutdown signal") does.
+          shutdown_vm() {
+            python3 -c 'import socket; s = socket.socket(socket.AF_UNIX); s.connect("qemu.sock"); s.sendall(b"system_powerdown\n")'
+            for i in $(seq 90); do kill -0 "$(cat qemu.pid)" 2>/dev/null || return 0; sleep 1; done
+            echo "the VM did not shut down by itself"; kill "$(cat qemu.pid)"; exit 1
           }
           api() { curl -fsS -H "Authorization: Bearer $(cat token-1)" "http://127.0.0.1:7499$1"; }
           boot 1
@@ -261,10 +269,10 @@ jobs:
           api /api/runtime; echo
           api /api/runtime | grep -q '"state":"ready"' || { echo "the bundled Ollama did not start"; exit 1; }
           grep -q "kept on the attached disk" serial-1.log || { echo "the empty disk was not used"; exit 1; }
-          kill "$(cat qemu.pid)"; sleep 5
+          shutdown_vm
           boot 2
           [ "$(cat token-1)" = "$(cat token-2)" ] || { echo "nothing was kept across a reboot"; exit 1; }
-          kill "$(cat qemu.pid)"
+          shutdown_vm
       - uses: actions/upload-artifact@v4
         with:
           name: Fleet-51-iso
