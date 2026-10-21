@@ -104,7 +104,7 @@ async function api(path, body) {
 }
 function showGate() {
   $('#token-gate').hidden = false;
-  $('#token-save').onclick = () => { token = $('#token-input').value.trim(); store.set('token', token); location.reload(); };
+  $('#token-save').onclick = () => { token = $('#token-input').value.replace(/\s+/g, ''); /* the VM shows it in groups of four */ store.set('token', token); location.reload(); };
 }
 
 // ---- state -------------------------------------------------------------------

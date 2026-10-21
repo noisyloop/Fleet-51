@@ -1,0 +1,19 @@
+[Unit]
+Description=Fleet-51
+Requires=fleet51-storage.service
+After=fleet51-storage.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=fleet51
+Group=fleet51
+Environment=HOME=/data/home
+WorkingDirectory=/data/home
+# Listens on every address so VirtualBox's port forwarding reaches it; it still only answers
+# requests for "localhost" and with its access code. It starts Ollama itself, from /usr/local.
+ExecStart=/usr/local/bin/fleet51 daemon --listen 0.0.0.0:7499
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -224,9 +224,56 @@ jobs:
           name: Fleet-51-windows
           path: dist/Fleet-51-windows-setup.exe
 
+  iso:
+    name: Bootable ISO (x86-64, for VirtualBox)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Fleet-51 as one self-contained Linux program
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --target x86_64-unknown-linux-musl
+      - name: Build the ISO (a small Debian live system)
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          docker run --rm --privileged -v "$PWD:/src" -w /src debian:bookworm bash -c \
+            "apt-get update -qq && apt-get install -y -qq live-build zstd curl ca-certificates >/dev/null && packaging/iso/build-iso.sh $VERSION target/x86_64-unknown-linux-musl/release/fleet51 dist/Fleet-51-x86_64.iso"
+          sudo chown -R "$(id -u)" dist
+      - name: Boot it twice with an empty disk; Fleet-51 starts and keeps its data
+        run: |
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; ACCEL=kvm; else ACCEL=tcg; fi
+          qemu-img create -f qcow2 data.qcow2 8G
+          boot() {
+            qemu-system-x86_64 -accel $ACCEL -m 4096 -smp 2 -boot d -cdrom dist/Fleet-51-x86_64.iso \
+              -drive file=data.qcow2,if=virtio -nic user,hostfwd=tcp:127.0.0.1:7499-:7499 \
+              -display none -serial file:serial-$1.log -daemonize -pidfile qemu.pid
+            for i in $(seq 240); do grep -q "fleet51-token:" serial-$1.log 2>/dev/null && break; sleep 2; done
+            tail -40 serial-$1.log
+            sed -n 's/.*fleet51-token: \([0-9a-f]*\).*/\1/p' serial-$1.log | tail -1 > token-$1
+            [ -s token-$1 ] || { echo "Fleet-51 did not start in the VM"; exit 1; }
+          }
+          api() { curl -fsS -H "Authorization: Bearer $(cat token-1)" "http://127.0.0.1:7499$1"; }
+          boot 1
+          curl -fsS http://127.0.0.1:7499/ | grep -q 'id="setup"'
+          for i in $(seq 120); do api /api/runtime | grep -q '"state":"ready"' && break; sleep 2; done
+          api /api/runtime; echo
+          api /api/runtime | grep -q '"state":"ready"' || { echo "the bundled Ollama did not start"; exit 1; }
+          grep -q "kept on the attached disk" serial-1.log || { echo "the empty disk was not used"; exit 1; }
+          kill "$(cat qemu.pid)"; sleep 5
+          boot 2
+          [ "$(cat token-1)" = "$(cat token-2)" ] || { echo "nothing was kept across a reboot"; exit 1; }
+          kill "$(cat qemu.pid)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fleet-51-iso
+          path: dist/Fleet-51-x86_64.iso
+          compression-level: 0
+
   release:
     name: Release
-    needs: [test, macos, windows]
+    needs: [test, macos, windows, iso]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -257,7 +304,7 @@ jobs:
             echo "v$VERSION is already released; nothing to publish."
             exit 0
           fi
-          gh release create "v$VERSION" dist/Fleet-51-macos.dmg dist/Fleet-51-windows-setup.exe \
+          gh release create "v$VERSION" dist/Fleet-51-macos.dmg dist/Fleet-51-windows-setup.exe dist/Fleet-51-x86_64.iso \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Fleet-51 $VERSION" --generate-notes --latest
       - name: Attach to GitHub release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
@@ -266,3 +313,4 @@ jobs:
           files: |
             dist/Fleet-51-macos.dmg
             dist/Fleet-51-windows-setup.exe
+            dist/Fleet-51-x86_64.iso
