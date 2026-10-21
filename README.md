@@ -27,6 +27,12 @@ no subscription, no usage limit, and it keeps working on a plane.
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
 
+## What's new in 0.5.7
+
+- **Fleet-51 as a bootable ISO**, to run in a VirtualBox (or other) virtual machine, apart from your
+  computer: see [Run in a virtual machine](#run-in-a-virtual-machine-virtualbox). Run code there
+  uses the Linux sandbox, inside the VM's own walls.
+
 ## What's new in 0.5.6
 
 - **Setup no longer gets stuck on "Starting Ollama…".** If the model engine became ready at the
@@ -149,6 +155,28 @@ has no sandbox as simple as macOS's, so code a bot runs could reach anything you
 It's off unless you switch it on, after a warning. Everything else works the same.
 
 On Linux you can build from source (below) with Ollama installed.
+
+## Run in a virtual machine (VirtualBox)
+
+Fleet-51 also comes as a bootable ISO: a small Linux system that starts Fleet-51 (and Ollama) by
+itself. Everything stays inside the VM, and Run code is sandboxed there too. It's for Intel/AMD
+computers.
+
+1. Download **[Fleet-51-x86_64.iso](https://github.com/noisyloop/Fleet-51/releases/latest/download/Fleet-51-x86_64.iso)**.
+2. In VirtualBox: **New**, type **Linux**, version **Debian (64-bit)**, and pick the ISO (skip
+   unattended installation). Give it **4 GB** of memory (8 GB for bigger models) and 2 or more
+   processors. Leave EFI off.
+3. To keep chats and models between runs, give it an **empty hard disk** (10 GB or more): Fleet-51
+   formats it the first time and uses it from then on. It never touches a disk that has anything
+   on it. Without one, everything is gone when the VM stops, which is handy for trying a fresh
+   start.
+4. **Settings › Network › Adapter 1** (NAT) **› Port Forwarding**: add a rule with host IP
+   `127.0.0.1`, host port `7499`, guest port `7499`.
+5. Start the VM. When it's ready, its screen shows an access code. On your computer, open
+   **http://localhost:7499** and enter the code.
+
+VMs have no graphics card, so models run on the processor: choose a small one at setup
+(qwen3:0.6b or qwen3:1.7b).
 
 ## Build from source
 

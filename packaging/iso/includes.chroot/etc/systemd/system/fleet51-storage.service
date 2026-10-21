@@ -1,0 +1,14 @@
+[Unit]
+Description=Fleet-51 storage (an attached FLEET51 or blank disk, else memory)
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+Before=fleet51.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/fleet51/storage.sh
+
+[Install]
+WantedBy=multi-user.target

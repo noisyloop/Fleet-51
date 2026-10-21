@@ -1,0 +1,11 @@
+[Unit]
+Description=Fleet-51 address and access code on the VM's screen
+After=fleet51.service
+Wants=fleet51.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/fleet51/console.sh
+
+[Install]
+WantedBy=multi-user.target
