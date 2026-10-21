@@ -59,11 +59,18 @@ pub fn private_dir(path: &Path) {
 }
 
 pub fn write_private(path: &Path, contents: &str) -> anyhow::Result<()> {
-    std::fs::write(path, contents)?;
+    use std::io::Write;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(contents.as_bytes())?;
+    // On disk now, not in a few seconds: a computer (or VM) switched off right after keeps it.
+    f.sync_all()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        if let Some(dir) = path.parent().and_then(|d| std::fs::File::open(d).ok()) {
+            let _ = dir.sync_all();
+        }
     }
     Ok(())
 }

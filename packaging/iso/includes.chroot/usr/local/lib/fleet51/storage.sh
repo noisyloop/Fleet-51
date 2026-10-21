@@ -24,7 +24,8 @@ fi
 
 mkdir -p /data
 if [ -n "$dev" ]; then
-  mount -o noatime "$dev" /data
+  # Write to disk every second (not every 5), so little is lost if the VM is switched off.
+  mount -o noatime,commit=1 "$dev" /data
   echo disk >/run/fleet51-storage
 else
   mount -t tmpfs -o size=75%,mode=0755 tmpfs /data
