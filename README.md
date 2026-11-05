@@ -213,9 +213,18 @@ local time. Fleet-51 has to be running for an automation to run (closing the win
 missed while the computer was asleep or off happens when Fleet-51 is next running, if that's within
 12 hours.
 
+## Security
+
+Fleet-51 is a prototype. See **[SECURITY.md](SECURITY.md)** for a review of how bots are confined,
+what's solid, and what isn't yet. In short: the HTTP API is localhost-only and token-guarded, file
+tools can't leave a bot's folder, and **Run code** runs in a sandbox (hardened on Linux with
+bubblewrap). The macOS sandbox is defense-in-depth rather than a hard boundary, and Windows has no
+sandbox yet — both are called out in the review and in the app before you switch Run code on.
+
 ## Coming later
 
-Email notifications, a sandbox for Run code on Windows, a Linux package, and signed builds.
+Email notifications, a deny-by-default macOS sandbox, a sandbox for Run code on Windows, a Linux
+package, and signed builds.
 
 ## Attribution to my own project EverythingOS for inspiring the idea with a lot of research on the safety of ai agents and autonomous software/robots.
 
