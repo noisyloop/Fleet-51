@@ -1,6 +1,9 @@
 //! Running a bot's code safely. Commands run with the bot's folder as the only writable place, no
-//! network, the rest of your home folder hidden, a clean environment and a time limit.
+//! network, personal files hidden, a clean environment, a process/file-size cap and a time limit.
 //! macOS uses its built-in sandbox (sandbox-exec); Linux uses bubblewrap (bwrap) when installed.
+//! On Linux the whole disk is bound read-only so tools can run, but every place personal files
+//! live (home folders, mounted and removable drives) is hidden behind tmpfs, and nested user
+//! namespaces are disabled.
 //! Windows has no sandbox here yet: there, Run code runs commands as a plain process in the bot's
 //! folder (clean environment, time limit) and the user is told so before switching it on.
 //! Anywhere else without a working sandbox, bots are not offered the tool at all.
@@ -59,6 +62,9 @@ fn detect() -> Option<Kind> {
         ]);
         return quiet(c).then_some(Kind::MacOs);
     }
+    // The probe uses the same security-critical flags the real sandbox does, so we never claim a
+    // sandbox we can't actually build: --unshare-user plus --disable-userns (refuse the sandbox on
+    // a kernel too old to turn off nested user namespaces).
     let mut c = Command::new("bwrap");
     c.args([
         "--ro-bind",
@@ -67,6 +73,8 @@ fn detect() -> Option<Kind> {
         "--dev",
         "/dev",
         "--unshare-all",
+        "--unshare-user",
+        "--disable-userns",
         "--die-with-parent",
         "true",
     ]);
@@ -140,11 +148,17 @@ pub fn run(kind: Kind, folder: &Path, command: &str) -> Result<(Option<i32>, Str
             None,
         );
     }
+    // Cap how many processes and how large a single file the command can make, so a runaway (a
+    // fork bomb, a disk-filling loop) can't take the whole computer down inside the time limit.
+    // The limits are generous for ordinary scripts; `ulimit` failures are ignored so the command
+    // still runs where a shell can't set them. The bot's folder size is bounded elsewhere (undo).
+    let guarded =
+        format!("ulimit -u 1024 2>/dev/null; ulimit -f 4194304 2>/dev/null; {command}");
     run_program(
         Some(kind),
         folder,
         Path::new("/bin/sh"),
-        &["-c", command],
+        &["-c", &guarded],
         None,
     )
 }
@@ -194,7 +208,20 @@ pub fn run_program(
             // /run holds the D-Bus session and display sockets: through them a program could ask
             // the desktop to start things outside the sandbox.
             c.args(["--tmpfs", "/run"]);
-            // Hide the home folder (and Fleet-51's own data), then put the bot's folder back.
+            // The whole disk is bound read-only so programs (python, compilers) can run, but that
+            // also exposes every readable file on the computer. Hide the places personal files
+            // live — other users' home folders, and mounted or removable drives — behind empty
+            // tmpfs. System folders (/usr, /etc, …) stay readable because programs need them.
+            // (/run/media, where removable drives often mount, is already hidden: /run is tmpfs.)
+            for tree in ["/home", "/root", "/mnt", "/media", "/srv"] {
+                let p = Path::new(tree);
+                if p.exists() && !folder.starts_with(p) {
+                    c.arg("--tmpfs").arg(tree);
+                }
+            }
+            // Hide this user's home folder (and Fleet-51's own data), then put the bot's folder
+            // back. Done after the trees above so the bot's folder is restored even when it lives
+            // under one of them (for example ~/Fleet-51 under /home).
             let h = home();
             if h.is_dir() {
                 c.arg("--tmpfs").arg(&h);
@@ -207,7 +234,16 @@ pub fn run_program(
             if let Some(p) = extra_read {
                 c.arg("--ro-bind").arg(p).arg(p);
             }
-            c.args(["--unshare-all", "--die-with-parent", "--new-session"]);
+            // --disable-userns stops code inside the sandbox from creating its own (nested) user
+            // namespaces, which would widen the kernel surface it can reach. It needs an explicit
+            // --unshare-user (--unshare-all does not satisfy it).
+            c.args([
+                "--unshare-all",
+                "--unshare-user",
+                "--disable-userns",
+                "--die-with-parent",
+                "--new-session",
+            ]);
             c.arg("--chdir").arg(&folder);
             c.arg(program).args(args);
             c
@@ -383,6 +419,15 @@ mod tests {
         } else {
             let (_, out) = run(kind, &folder, "ls -A /run | wc -l").unwrap();
             assert_eq!(out.trim(), "0", "/run is visible in the sandbox");
+            // Home folders are hidden behind tmpfs: no file anywhere under /home is readable
+            // (the current user's own home remains only as an empty remount).
+            if Path::new("/home").exists() {
+                let (_, out) = run(kind, &folder, "find /home -type f 2>/dev/null | wc -l").unwrap();
+                assert_eq!(out.trim(), "0", "files under /home are visible in the sandbox");
+            }
+            // Code inside the sandbox can't create its own (nested) user namespace.
+            let (code, _) = run(kind, &folder, "unshare -Ur true").unwrap();
+            assert_ne!(code, Some(0), "nested user namespaces are allowed");
         }
         let _ = std::fs::remove_dir_all(&base);
     }
