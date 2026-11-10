@@ -47,6 +47,9 @@ pub enum Ev {
         /// The automation that sent this message, if it was not typed by the user.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         automation: Option<String>,
+        /// The team this message came from: the bot's turn in a team chat.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<String>,
         /// Files the user added to the bot's folder with this message.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<String>,
@@ -128,6 +131,10 @@ pub enum Live {
     Network {
         online: bool,
     },
+    /// The full list of teams, sent whenever one changes (a message, a turn, its status).
+    Teams {
+        teams: Vec<crate::teams::Team>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +164,8 @@ pub struct Prompt {
     pub delivered: bool,
     #[serde(default)]
     pub automation: Option<String>,
+    #[serde(default)]
+    pub team: Option<String>,
     #[serde(default)]
     pub attachments: Vec<String>,
 }
@@ -234,12 +243,14 @@ impl State {
                 id,
                 text,
                 automation,
+                team,
                 attachments,
             } => self.pending.push(Prompt {
                 id: id.clone(),
                 text: text.clone(),
                 delivered: false,
                 automation: automation.clone(),
+                team: team.clone(),
                 attachments: attachments.clone(),
             }),
             Ev::PromptDelivered { id } => {
@@ -319,6 +330,7 @@ mod tests {
                 id: "a".into(),
                 text: "one".into(),
                 automation: None,
+                team: None,
                 attachments: vec![],
             },
         ));
@@ -328,6 +340,7 @@ mod tests {
                 id: "b".into(),
                 text: "two".into(),
                 automation: None,
+                team: None,
                 attachments: vec![],
             },
         ));

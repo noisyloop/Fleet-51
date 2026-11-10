@@ -86,6 +86,13 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/automations/{id}", post(edit_automation))
         .route("/api/automations/{id}/run", post(run_automation))
         .route("/api/automations/{id}/delete", post(delete_automation))
+        .route("/api/teams", get(teams).post(create_team))
+        .route("/api/teams/{id}/start", post(start_team))
+        .route("/api/teams/{id}/stop", post(stop_team))
+        .route("/api/teams/{id}/say", post(team_say))
+        .route("/api/teams/{id}/delete", post(delete_team))
+        .route("/api/models/hf", get(hf_search))
+        .route("/api/models/hf/quants", get(hf_quants))
         .route("/api/stream", get(stream))
         .route("/api/shutdown", post(shutdown))
         .layer(middleware::from_fn_with_state(d.clone(), auth));
@@ -263,7 +270,9 @@ async fn send(State(d): D, Path(id): Path<String>, Json(t): Json<Text>) -> R<Val
     } else {
         t.text.clone()
     };
-    Ok(Json(json!({"id": d.prompt(&s, &text, None, &attachments)})))
+    Ok(Json(
+        json!({"id": d.prompt(&s, &text, None, None, &attachments)}),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -424,8 +433,10 @@ struct ModelName {
 }
 
 async fn pull_model(State(d): D, Json(m): Json<ModelName>) -> R<Value> {
-    d.pull_model(m.name.trim())?;
-    Ok(Json(json!({"pulling": m.name.trim()})))
+    // Hugging Face links and `ollama run hf.co/...` become the name Ollama downloads.
+    let name = crate::models::normalize_name(&m.name);
+    d.pull_model(&name)?;
+    Ok(Json(json!({"pulling": name})))
 }
 
 async fn cancel_pull(State(d): D, Json(m): Json<ModelName>) -> Json<Value> {
@@ -478,6 +489,58 @@ async fn delete_runs(State(d): D, Path(id): Path<String>, Json(r): Json<DeleteRu
 async fn delete_automation(State(d): D, Path(id): Path<String>) -> R<Value> {
     crate::automations::delete(&d, &id)?;
     Ok(Json(json!({"ok": true})))
+}
+
+async fn teams(State(d): D) -> Json<Value> {
+    Json(json!(d.teams.list()))
+}
+
+async fn create_team(State(d): D, Json(t): Json<crate::teams::Draft>) -> R<Value> {
+    let d2 = d.clone();
+    let t = tokio::task::spawn_blocking(move || crate::teams::create(&d2, t)).await??;
+    Ok(Json(json!(t)))
+}
+
+async fn start_team(State(d): D, Path(id): Path<String>) -> R<Value> {
+    let d2 = d.clone();
+    tokio::task::spawn_blocking(move || crate::teams::start(&d2, &id)).await??;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn stop_team(State(d): D, Path(id): Path<String>) -> R<Value> {
+    crate::teams::stop(&d, &id)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn team_say(State(d): D, Path(id): Path<String>, Json(t): Json<Text>) -> R<Value> {
+    let d2 = d.clone();
+    tokio::task::spawn_blocking(move || crate::teams::say(&d2, &id, &t.text)).await??;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn delete_team(State(d): D, Path(id): Path<String>) -> R<Value> {
+    crate::teams::delete(&d, &id)?;
+    Ok(Json(json!({"ok": true})))
+}
+
+#[derive(Deserialize)]
+struct HfQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    repo: String,
+}
+
+/// Search Hugging Face for GGUF models (the app's page can only talk to Fleet-51 itself).
+async fn hf_search(Query(q): Query<HfQuery>) -> R<Value> {
+    let found = tokio::task::spawn_blocking(move || crate::models::hf_search(&q.q)).await??;
+    Ok(Json(json!(found)))
+}
+
+/// The quantizations a Hugging Face GGUF repository offers, with their download sizes.
+async fn hf_quants(Query(q): Query<HfQuery>) -> R<Value> {
+    let found = tokio::task::spawn_blocking(move || crate::models::hf_quants(&q.repo)).await??;
+    Ok(Json(json!(found)))
 }
 
 async fn stream(State(d): D) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {

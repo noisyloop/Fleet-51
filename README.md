@@ -27,6 +27,18 @@ no subscription, no usage limit, and it keeps working on a plane.
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
 
+## What's new (next release)
+
+- **Teams: bots that work together by themselves.** Put 2 to 6 bots in a team (**Teams › New**, or a
+  bot's **⋯ › New team…**), give them a goal, and they take turns in a shared chat: each one is sent
+  what the others said since its last turn and adds its part, until one says the goal is done or
+  the turn limit is reached. Join in any time (your message goes to the next bot), stop it, or
+  press **Continue** for more turns. See [Teams](#teams).
+- **Models from Hugging Face.** In **Models**, search Hugging Face for GGUF models, pick a size
+  (quantization) and download it, or paste a Hugging Face link. Ollama runs it like any other
+  model (`hf.co/<owner>/<repo>:<quant>`); sizes are checked against your free disk space first.
+  No Hugging Face account or login needed: only public, ungated models are offered.
+
 ## What's new in 0.5.7
 
 - **Fleet-51 as a bootable ISO**, to run in a VirtualBox (or other) virtual machine, apart from your
@@ -91,6 +103,10 @@ no subscription, no usage limit, and it keeps working on a plane.
   originals are never touched. PDFs and Word documents are read inside the sandbox and their text is
   given to the bot; images go to models that can see, such as gemma4. Files a bot writes are marked
   like downloads, so macOS asks before opening a script or app it made.
+- **Teams:** bots on different models work on one goal together, taking turns by themselves, while
+  you watch, join in or stop them.
+- **Hugging Face models:** search and download GGUF models from Hugging Face in **Models**, or
+  paste a model's link; `fleet51 models pull hf.co/<owner>/<repo>:Q4_K_M` works too.
 - **Automations:** give a bot a job on a schedule: once, hourly, daily, weekdays, weekly, monthly,
   annually, or your own days and times. Name it, write the instructions, and get a notification when
   it's done. The run and its reply land in the bot's chat.
@@ -196,6 +212,7 @@ scripts/smoke.sh                # end-to-end test against a stand-in Ollama
 | `src/session.rs`, `src/events.rs` | Each bot is an append-only event log plus a supervisor that runs its agent; replies, reasoning and status are read from the log |
 | `src/agent.rs` | The bot itself: talks to the Ollama model, with file tools confined to the bot's folder |
 | `src/sandbox.rs`, `src/checkpoints.rs` | Running bot code in the OS sandbox; undo copies of bot folders |
+| `src/teams.rs` | Teams: bots taking turns on a shared goal (`~/.fleet51/teams.json`) |
 | `src/automations.rs` | Schedules, runs and notifications for automations (`~/.fleet51/automations.json`) |
 | `src/runtime.rs`, `src/models.rs` | Finds, downloads (checksum-verified) and starts Ollama; lists and downloads models |
 | `ui/` | The chat app (no build step), shown in the Mac app's window or any browser |
@@ -212,6 +229,36 @@ it, a trigger, the instructions, and whether to notify you when it's done. Times
 local time. Fleet-51 has to be running for an automation to run (closing the window is fine); a run
 missed while the computer was asleep or off happens when Fleet-51 is next running, if that's within
 12 hours.
+
+## Teams
+
+**Teams › New** (or a bot's **⋯ › New team…**): a name, 2 to 6 bots (in the order they speak), a
+goal and how many turns to take before pausing (6 to 40). The team starts straight away:
+
+- Each bot, in turn, is sent the goal and everything said in the team chat since its last turn
+  (by teammates and by you), and replies. Its turn also shows in its own chat, folded under the
+  team's name, so it remembers the team's work when you talk to it later.
+- A bot ends the work by writing **[DONE]**; otherwise the team pauses at the turn limit. You get a
+  notification either way. **Continue** (or a message from you) gives it that many turns again.
+- **Stop** lets the bot that's speaking finish, then pauses. If Fleet-51 restarts mid-turn, the
+  team pauses and Continue picks up where it left off.
+- Teammates only see what each bot says, never its files: every bot keeps its own folder and its
+  own Run code and Think settings. Mixing models works well, for example a coding model that
+  writes and a general model that reviews.
+
+## Models from Hugging Face
+
+Ollama can run any GGUF model on Hugging Face. In **Models**, type what you're looking for and press
+**Search Hugging Face**, or paste a model's link (`https://huggingface.co/<owner>/<repo>`, even a
+link to one `.gguf` file). **Choose size** lists its quantizations with their download sizes;
+**Q4_K_M** is a good default (smaller is faster, bigger is smarter). Sizes are checked against your
+free disk space before anything downloads, as for every model. Downloaded models are named
+`hf.co/<owner>/<repo>:<quant>` and appear in each bot's model menu.
+
+**No Hugging Face account or login is needed.** Fleet-51 never sends a token: it only lists public,
+ungated models, and if you paste a link to a gated one (some makers, such as Meta and Google, ask
+you to log in and accept their terms first), it says so before downloading and suggests an ungated
+GGUF copy instead (bartowski, unsloth and lmstudio-community publish most popular models).
 
 ## Security
 

@@ -141,6 +141,7 @@ impl Session {
         &self,
         text: &str,
         automation: Option<&str>,
+        team: Option<&str>,
         attachments: &[String],
     ) -> (String, bool) {
         let guard = self.cmd.lock().unwrap();
@@ -149,6 +150,7 @@ impl Session {
             id: id.clone(),
             text: text.to_string(),
             automation: automation.map(str::to_string),
+            team: team.map(str::to_string),
             attachments: attachments.to_vec(),
         });
         let live = guard.as_ref().is_some_and(|tx| {
@@ -198,7 +200,7 @@ fn requeue_interrupted(s: &Session) {
             level: "info".into(),
             message: "the last reply was interrupted; asking again".into(),
         });
-        s.queue_prompt(&text, None, &[]);
+        s.queue_prompt(&text, None, None, &[]);
     }
 }
 

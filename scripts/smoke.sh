@@ -181,6 +181,28 @@ RUN=$(api /api/automations | json 'd[0]["history"][0]["id"]')
 api "/api/automations/$AUTO/history/delete" "{\"run\":\"$RUN\"}" >/dev/null
 [ "$(api /api/automations | json 'len(d[0]["history"])')" = "0" ] || fail "run not deleted from history"
 
+step "Teams: bots take turns on a goal by themselves, and stop when one says it's done"
+team() { api /api/teams | json "[t for t in d if t['id']=='$1'][0]$2"; }
+TEAM=$(api /api/teams "{\"name\":\"Party\",\"goal\":\"plan a party\",\"members\":[\"$FLEET\",\"$SCOUT\"],\"max_turns\":3}" | json 'd["id"]')
+api /api/teams "{\"name\":\"Solo\",\"goal\":\"x\",\"members\":[\"$FLEET\"]}" | grep -q "2 to 6 bots" || fail "a team of one was accepted"
+for _ in $(seq 150); do [ "$(team "$TEAM" "['status']")" = "done" ] && break; sleep 0.2; done
+[ "$(team "$TEAM" "['status']")" = "done" ] || { api /api/teams; fail "team did not finish its turns"; }
+# Three turns, in order: Fleet, Scout, Fleet; then a note about the turn limit.
+[ "$(team "$TEAM" "['turns']")" = "3" ] || fail "wrong number of turns"
+FROM=$(api /api/teams | json "' '.join(m['name'] for m in [t for t in d if t['id']=='$TEAM'][0]['messages'] if m['from']!='system')")
+[ "$FROM" = "Fleet Scout Fleet" ] || { api /api/teams; fail "turns out of order: $FROM"; }
+wait_for "$SCOUT" "e['type']=='prompt_queued' and e.get('team')=='Party' and 'Fleet: ' in e['text']"
+# Joining in starts it again; "wrap up" makes the next bot say [DONE].
+api "/api/teams/$TEAM/say" '{"text":"please wrap up"}' >/dev/null
+for _ in $(seq 150); do team "$TEAM" "['messages'][-1]['text']" | grep -q "says the goal is done" && break; sleep 0.2; done
+team "$TEAM" "['messages'][-1]['text']" | grep -q "says the goal is done" || { api /api/teams; fail "team did not stop at [DONE]"; }
+[ "$(team "$TEAM" "['status']")" = "done" ] || fail "team still running after [DONE]"
+api "/api/teams/$TEAM/delete" '{}' >/dev/null
+[ "$(api /api/teams | json 'len(d)')" = "0" ] || fail "team not deleted"
+
+step "Hugging Face: a model page link downloads as hf.co/<owner>/<repo>"
+api /api/models/pull '{"name":"https://huggingface.co/someone/Tiny-GGUF/blob/main/Tiny-Q8_0.gguf"}' | grep -q '"pulling":"hf.co/someone/Tiny-GGUF:Q8_0"' || fail "Hugging Face link not understood"
+
 step "Update handoff: a newer service takes over and keeps the bots"
 OLD=$("$PY" -c "import json; print(json.load(open('$FLEET51_HOME/daemon.json'))['pid'])")
 "$BIN" daemon --listen "127.0.0.1:$PORT" > "$WORK/daemon2.log" 2>&1 &
