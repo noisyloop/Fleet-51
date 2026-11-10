@@ -331,6 +331,8 @@ impl Daemon {
                 None => Ok(()),
             };
             let mut parts = std::collections::HashMap::new();
+            // No Hugging Face login, ever: a gated model is refused before Ollama starts on it.
+            let fits = fits.and_then(|()| crate::models::hf_check_public(&name));
             let result = fits.and_then(|()| {
                 crate::models::pull(&name, |p| {
                     if d.cancelled.lock().unwrap().remove(&name) {

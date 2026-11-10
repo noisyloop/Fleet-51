@@ -572,7 +572,7 @@ const count = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.
 function hfRepoRow(repo, quant, info) {
   const st = hfQuants.get(repo);
   const name = `hf.co/${repo}${quant ? ':' + quant : ''}`;
-  const sub = info ? `${count(info.downloads)} downloads · ${count(info.likes)} likes${info.task ? ' · ' + info.task : ''}` : 'From Hugging Face. Ollama downloads its GGUF file; pick a size (smaller is faster, bigger is smarter).';
+  const sub = info ? `${count(info.downloads)} downloads · ${count(info.likes)} likes${info.task ? ' · ' + info.task : ''}` : 'From Hugging Face, no login needed. Ollama downloads its GGUF file; pick a size (smaller is faster, bigger is smarter).';
   const quants = st && st.quants ? el('div', { class: 'hf-quants' }, st.quants.map((q) => {
     const p = pulls.get(q.name);
     const ok = fits(q.bytes);
@@ -594,7 +594,7 @@ function hfSection() {
   const q = modelQuery;
   if (!q || hfName(q)) return null;
   const mine = hfFound && hfFound.q === q ? hfFound : null;
-  return el('div', { class: 'model-list' }, el('h3', { text: 'Hugging Face' }),
+  return el('div', { class: 'model-list' }, el('h3', { text: 'Hugging Face' }), el('div', { class: 'muted', text: 'Public models only: no account or login needed.' }),
     !mine ? el('button', { type: 'button', class: 'pill', disabled: !online, onclick: () => searchHf(q) }, `Search Hugging Face for “${q}”`)
       : mine.loading ? el('div', { class: 'muted', text: 'Searching…' })
       : mine.error ? el('div', { class: 'muted', text: `Failed: ${mine.error}` })

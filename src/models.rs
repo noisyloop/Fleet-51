@@ -215,6 +215,10 @@ pub fn valid_name(name: &str) -> bool {
 // ---- Hugging Face ----------------------------------------------------------------------------
 // Ollama downloads GGUF models straight from Hugging Face by the name hf.co/<owner>/<repo>, with
 // an optional quantization as the tag (hf.co/<owner>/<repo>:Q4_K_M; Q4_K_M when left out).
+//
+// No Hugging Face account or login is ever needed or used: Fleet-51 sends no token, offers only
+// public, ungated models, and refuses gated ones (which need a login to accept their terms)
+// before downloading, pointing to the ungated GGUF copies most models have.
 
 const HF_API: &str = "https://huggingface.co/api";
 /// The quantization Ollama picks from a Hugging Face repository when the name gives none.
@@ -317,8 +321,8 @@ fn hf_get(url: &str, query: &[(&str, &str)]) -> Result<Value> {
     let mut resp = req
         .call()
         .context("cannot reach Hugging Face (are you online?)")?;
-    if resp.status() == 404 || resp.status() == 401 {
-        bail!("that Hugging Face model doesn't exist, or is private or gated");
+    if resp.status() == 404 || resp.status() == 401 || resp.status() == 403 {
+        bail!("that Hugging Face model doesn't exist or isn't public (Fleet-51 only uses public models, no login)");
     }
     if !resp.status().is_success() {
         bail!("Hugging Face answered {}", resp.status());
@@ -339,10 +343,41 @@ pub fn hf_search(q: &str) -> Result<Vec<Value>> {
             ("filter", "gguf"),
             ("sort", "downloads"),
             ("direction", "-1"),
-            ("limit", "20"),
+            // Only models anyone can download without an account.
+            ("gated", "false"),
+            ("limit", "30"),
         ],
     )?;
-    Ok(search_results(&v))
+    Ok(search_results(&v).into_iter().take(20).collect())
+}
+
+/// Gated models (`"gated": "auto"` or `"manual"`) need a login to accept their terms first.
+fn needs_login(m: &Value) -> bool {
+    m["private"] == true
+        || m["disabled"] == true
+        || m["gated"].as_bool().unwrap_or(!m["gated"].is_null())
+}
+
+fn login_needed(repo: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{repo} needs a Hugging Face login (its makers ask you to accept their terms first), and \
+         Fleet-51 never asks you to log in. Search for a GGUF copy of it instead, for example from \
+         bartowski, unsloth or lmstudio-community: those download without an account."
+    )
+}
+
+/// Refuse a model that can't be downloaded without logging in to Hugging Face, before Ollama
+/// tries. When Hugging Face can't be asked (offline), the download itself will say.
+pub fn hf_check_public(name: &str) -> Result<()> {
+    let Some((repo, _)) = hf_parts(name) else {
+        return Ok(());
+    };
+    match hf_get(&format!("{HF_API}/models/{repo}"), &[]) {
+        Ok(info) if needs_login(&info) => Err(login_needed(&repo)),
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().contains("isn't public") => Err(e),
+        Err(_) => Ok(()),
+    }
 }
 
 fn search_results(v: &Value) -> Vec<Value> {
@@ -351,7 +386,7 @@ fn search_results(v: &Value) -> Vec<Value> {
         .flatten()
         .filter_map(|m| {
             let id = m["id"].as_str().or(m["modelId"].as_str())?;
-            valid_repo(id).then(|| {
+            (valid_repo(id) && !needs_login(m)).then(|| {
                 json!({
                     "repo": id,
                     "name": format!("hf.co/{id}"),
@@ -435,6 +470,7 @@ pub fn hf_quants(repo: &str) -> Result<Value> {
     let repo = normalize_name(repo);
     let repo = repo.strip_prefix("hf.co/").unwrap_or(&repo);
     let repo = repo.split(':').next().unwrap_or(repo);
+    hf_check_public(&format!("hf.co/{repo}"))?;
     let files = hf_files(repo)?;
     if files.is_empty() {
         bail!("{repo} has no GGUF files, so Ollama can't run it. Look for a version of it with GGUF in the name.");
@@ -645,9 +681,24 @@ mod tests {
     fn hugging_face_search_and_quantization_sizes() {
         let found = search_results(&json!([
             {"id": "bartowski/Llama-3.2-1B-Instruct-GGUF", "downloads": 900, "likes": 50, "pipeline_tag": "text-generation"},
-            {"id": "not a repo"}
+            {"id": "not a repo"},
+            {"id": "meta-llama/Llama-3.2-1B", "gated": "manual"},
+            {"id": "google/gemma-3-1b-it", "gated": "auto"},
+            {"id": "someone/secret-GGUF", "private": true},
+            {"id": "unsloth/gemma-3-1b-it-GGUF", "gated": false}
         ]));
-        assert_eq!(found.len(), 1);
+        // Only public, ungated models: nothing that needs a Hugging Face login.
+        let repos: Vec<_> = found.iter().map(|f| f["repo"].as_str().unwrap()).collect();
+        assert_eq!(
+            repos,
+            [
+                "bartowski/Llama-3.2-1B-Instruct-GGUF",
+                "unsloth/gemma-3-1b-it-GGUF"
+            ]
+        );
+        assert!(login_needed("meta-llama/Llama-3.2-1B")
+            .to_string()
+            .contains("never asks you to log in"));
         assert_eq!(
             found[0]["name"],
             "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF"

@@ -37,6 +37,7 @@ no subscription, no usage limit, and it keeps working on a plane.
 - **Models from Hugging Face.** In **Models**, search Hugging Face for GGUF models, pick a size
   (quantization) and download it, or paste a Hugging Face link. Ollama runs it like any other
   model (`hf.co/<owner>/<repo>:<quant>`); sizes are checked against your free disk space first.
+  No Hugging Face account or login needed: only public, ungated models are offered.
 
 ## What's new in 0.5.7
 
@@ -252,8 +253,12 @@ Ollama can run any GGUF model on Hugging Face. In **Models**, type what you're l
 link to one `.gguf` file). **Choose size** lists its quantizations with their download sizes;
 **Q4_K_M** is a good default (smaller is faster, bigger is smarter). Sizes are checked against your
 free disk space before anything downloads, as for every model. Downloaded models are named
-`hf.co/<owner>/<repo>:<quant>` and appear in each bot's model menu. Gated or private models can't
-be downloaded this way.
+`hf.co/<owner>/<repo>:<quant>` and appear in each bot's model menu.
+
+**No Hugging Face account or login is needed.** Fleet-51 never sends a token: it only lists public,
+ungated models, and if you paste a link to a gated one (some makers, such as Meta and Google, ask
+you to log in and accept their terms first), it says so before downloading and suggests an ungated
+GGUF copy instead (bartowski, unsloth and lmstudio-community publish most popular models).
 
 ## Security
 
