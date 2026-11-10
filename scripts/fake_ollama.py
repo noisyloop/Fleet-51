@@ -4,7 +4,8 @@ Replies echo the model name and include reasoning unless thinking is turned off.
 containing "save a note" make the model write notes.md; "escape" makes it try to write
 outside its folder; "break it" overwrites notes.md; "run code" runs a command that also tries to
 write outside the folder; "context size" reports the context size asked for; "cut off" ends the
-reply as if the model ran out of room.
+reply as if the model ran out of room. A team turn ("[Team ...") replies with the model's name,
+and says [DONE] once someone in the team chat has said "wrap up".
 """
 import json
 import os
@@ -80,7 +81,11 @@ class H(BaseHTTPRequestHandler):
                 self.send({"message": {"role": "assistant", "content": f"I can see {images} image(s). {last['content'][-80:]}"}, "done": True, "done_reason": "stop", "prompt_eval_count": 1, "eval_count": 1})
                 return
             msg = {"role": "assistant", "content": f"Hello from {model}."}
-            if last["role"] == "user" and last["content"].startswith("[Automation"):
+            if last["role"] == "user" and last["content"].startswith("[Team"):
+                # A team turn: "wrap up" from anyone in the team chat ends it.
+                done = " [DONE]" if "wrap up" in last["content"] else ""
+                msg = {"role": "assistant", "content": f"{model} did its part.{done}"}
+            elif last["role"] == "user" and last["content"].startswith("[Automation"):
                 msg = {"role": "assistant", "content": f"Automation ran with {len(b['messages'])} messages."}
             elif last["role"] == "user" and "save a note" in last["content"]:
                 msg = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "write_file", "arguments": {"path": "notes.md", "content": "hi"}}}]}

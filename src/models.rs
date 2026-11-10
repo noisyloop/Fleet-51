@@ -125,6 +125,9 @@ pub fn free_bytes() -> Option<u64> {
 /// A model's download size from Ollama's registry, before downloading anything. `None` when it
 /// can't be known (offline, another registry, a cloud model).
 pub fn download_size(name: &str) -> Option<u64> {
+    if let Some((repo, quant)) = hf_parts(name) {
+        return hf_size(&repo, quant.as_deref());
+    }
     let url = manifest_url(name)?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(10)))
@@ -207,6 +210,256 @@ pub fn valid_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "._:/-".contains(c))
+}
+
+// ---- Hugging Face ----------------------------------------------------------------------------
+// Ollama downloads GGUF models straight from Hugging Face by the name hf.co/<owner>/<repo>, with
+// an optional quantization as the tag (hf.co/<owner>/<repo>:Q4_K_M; Q4_K_M when left out).
+
+const HF_API: &str = "https://huggingface.co/api";
+/// The quantization Ollama picks from a Hugging Face repository when the name gives none.
+pub const HF_DEFAULT_QUANT: &str = "Q4_K_M";
+
+/// What people paste for a Hugging Face model, as the name Ollama downloads: a page link
+/// (https://huggingface.co/owner/repo, even with /tree/main or /blob/... after it), `ollama run
+/// hf.co/...`, or owner/repo:quant with hf.co/ in front. Anything else comes back trimmed.
+pub fn normalize_name(input: &str) -> String {
+    let mut s = input.trim();
+    for p in ["ollama run ", "ollama pull "] {
+        if let Some(r) = s.strip_prefix(p) {
+            s = r.trim();
+        }
+    }
+    for p in ["https://", "http://"] {
+        if let Some(r) = s.strip_prefix(p) {
+            s = r;
+        }
+    }
+    let rest = ["huggingface.co/", "www.huggingface.co/", "hf.co/"]
+        .iter()
+        .find_map(|p| s.strip_prefix(p));
+    let Some(rest) = rest else {
+        return s.to_string();
+    };
+    let (path, tag) = match rest.split_once(':') {
+        Some((p, t)) => (p, Some(t)),
+        None => (rest, None),
+    };
+    let mut parts = path.split('/').filter(|p| !p.is_empty());
+    let (Some(owner), Some(repo)) = (parts.next(), parts.next()) else {
+        return format!("hf.co/{rest}");
+    };
+    // A link to one file names its quantization: .../blob/main/Model-Q5_K_M.gguf
+    let file_quant = path
+        .rsplit('/')
+        .next()
+        .filter(|f| f.to_ascii_lowercase().ends_with(".gguf"))
+        .and_then(quant_of);
+    match tag.map(str::to_string).or(file_quant) {
+        Some(t) if !t.is_empty() => format!("hf.co/{owner}/{repo}:{t}"),
+        _ => format!("hf.co/{owner}/{repo}"),
+    }
+}
+
+/// `hf.co/owner/repo:quant` as ("owner/repo", Some("quant")).
+fn hf_parts(name: &str) -> Option<(String, Option<String>)> {
+    let rest = name
+        .strip_prefix("hf.co/")
+        .or_else(|| name.strip_prefix("huggingface.co/"))?;
+    let (repo, tag) = match rest.split_once(':') {
+        Some((r, t)) => (r, Some(t.to_string())),
+        None => (rest, None),
+    };
+    valid_repo(repo).then(|| (repo.to_string(), tag.filter(|t| t != "latest")))
+}
+
+/// owner/repo, in the characters Hugging Face allows (so it is safe in an API path).
+pub fn valid_repo(repo: &str) -> bool {
+    let mut parts = repo.split('/');
+    let ok = |p: Option<&str>| {
+        p.is_some_and(|p| {
+            !p.is_empty()
+                && p.len() <= 96
+                && !p.starts_with('.')
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+        })
+    };
+    ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
+}
+
+/// The quantization in a GGUF file's name: "Llama-3.2-1B-Instruct-Q4_K_M.gguf" is Q4_K_M.
+pub fn quant_of(file: &str) -> Option<String> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)(?:^|[-_./])((?:I?Q[1-8](?:_[0-9A-Z]{1,2})*)|BF16|F16|F32)(?:[-_.]|$)",
+        )
+        .expect("valid regex")
+    });
+    let name = file.rsplit('/').next().unwrap_or(file);
+    re.captures(name).map(|c| c[1].to_ascii_uppercase())
+}
+
+fn hf_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+fn hf_get(url: &str, query: &[(&str, &str)]) -> Result<Value> {
+    let mut req = hf_agent().get(url).header("Accept", "application/json");
+    for (k, v) in query {
+        req = req.query(*k, *v);
+    }
+    let mut resp = req
+        .call()
+        .context("cannot reach Hugging Face (are you online?)")?;
+    if resp.status() == 404 || resp.status() == 401 {
+        bail!("that Hugging Face model doesn't exist, or is private or gated");
+    }
+    if !resp.status().is_success() {
+        bail!("Hugging Face answered {}", resp.status());
+    }
+    Ok(resp.body_mut().read_json()?)
+}
+
+/// GGUF models on Hugging Face matching `q`, most downloaded first.
+pub fn hf_search(q: &str) -> Result<Vec<Value>> {
+    let q = q.trim();
+    if q.is_empty() || q.len() > 100 {
+        bail!("type what to search for");
+    }
+    let v = hf_get(
+        &format!("{HF_API}/models"),
+        &[
+            ("search", q),
+            ("filter", "gguf"),
+            ("sort", "downloads"),
+            ("direction", "-1"),
+            ("limit", "20"),
+        ],
+    )?;
+    Ok(search_results(&v))
+}
+
+fn search_results(v: &Value) -> Vec<Value> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = m["id"].as_str().or(m["modelId"].as_str())?;
+            valid_repo(id).then(|| {
+                json!({
+                    "repo": id,
+                    "name": format!("hf.co/{id}"),
+                    "downloads": m["downloads"].as_u64().unwrap_or(0),
+                    "likes": m["likes"].as_u64().unwrap_or(0),
+                    "task": m["pipeline_tag"],
+                })
+            })
+        })
+        .collect()
+}
+
+/// Every GGUF file in a repository with its size, including those in folders.
+fn hf_files(repo: &str) -> Result<Vec<(String, u64)>> {
+    if !valid_repo(repo) {
+        bail!("not a Hugging Face model: {repo} (expected owner/name)");
+    }
+    let v = hf_get(
+        &format!("{HF_API}/models/{repo}/tree/main"),
+        &[("recursive", "true")],
+    )?;
+    Ok(gguf_files(&v))
+}
+
+fn gguf_files(v: &Value) -> Vec<(String, u64)> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|f| f["type"] != "directory")
+        .filter_map(|f| {
+            let path = f["path"].as_str()?;
+            path.to_ascii_lowercase().ends_with(".gguf").then(|| {
+                let size = f["lfs"]["size"]
+                    .as_u64()
+                    .or(f["size"].as_u64())
+                    .unwrap_or(0);
+                (path.to_string(), size)
+            })
+        })
+        .collect()
+}
+
+fn is_projector(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase()
+        .contains("mmproj")
+}
+
+/// Group a repository's GGUF files by quantization (a big model is split over several files).
+/// A vision model's projector (mmproj) is downloaded with every quantization, so it is added in.
+fn quants_from(files: &[(String, u64)]) -> Vec<Value> {
+    let projector = files
+        .iter()
+        .filter(|(p, _)| is_projector(p))
+        .map(|(_, s)| *s)
+        .min()
+        .unwrap_or(0);
+    let mut by: Vec<(String, u64, usize)> = vec![];
+    for (path, size) in files.iter().filter(|(p, _)| !is_projector(p)) {
+        let Some(q) = quant_of(path) else { continue };
+        match by.iter_mut().find(|(x, _, _)| *x == q) {
+            Some(e) => {
+                e.1 += size;
+                e.2 += 1;
+            }
+            None => by.push((q, *size, 1)),
+        }
+    }
+    by.sort_by_key(|(_, s, _)| *s);
+    by.into_iter()
+        .map(|(q, s, n)| {
+            json!({"quant": q, "bytes": s + projector, "files": n, "vision": projector > 0, "default": q == HF_DEFAULT_QUANT})
+        })
+        .collect()
+}
+
+/// The quantizations a repository offers, smallest first, each with its download name.
+pub fn hf_quants(repo: &str) -> Result<Value> {
+    let repo = normalize_name(repo);
+    let repo = repo.strip_prefix("hf.co/").unwrap_or(&repo);
+    let repo = repo.split(':').next().unwrap_or(repo);
+    let files = hf_files(repo)?;
+    if files.is_empty() {
+        bail!("{repo} has no GGUF files, so Ollama can't run it. Look for a version of it with GGUF in the name.");
+    }
+    let quants: Vec<Value> = quants_from(&files)
+        .into_iter()
+        .map(|mut q| {
+            q["name"] = json!(format!(
+                "hf.co/{repo}:{}",
+                q["quant"].as_str().unwrap_or("")
+            ));
+            q
+        })
+        .collect();
+    Ok(json!({"repo": repo, "quants": quants}))
+}
+
+/// The download size of hf.co/<repo>:<quant>, before downloading. `None` when it can't be told.
+fn hf_size(repo: &str, quant: Option<&str>) -> Option<u64> {
+    let files = hf_files(repo).ok()?;
+    let want = quant.unwrap_or(HF_DEFAULT_QUANT).to_ascii_uppercase();
+    quants_from(&files)
+        .iter()
+        .find(|q| q["quant"].as_str() == Some(want.as_str()))
+        .and_then(|q| q["bytes"].as_u64())
 }
 
 fn agent() -> ureq::Agent {
@@ -339,5 +592,92 @@ mod tests {
             "{err}"
         );
         assert!(free_bytes().is_some_and(|b| b > 0), "free space unknown");
+    }
+
+    #[test]
+    fn hugging_face_names_links_and_quantizations() {
+        let n = |s| normalize_name(s);
+        assert_eq!(n(" qwen3:1.7b "), "qwen3:1.7b");
+        assert_eq!(
+            n("https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF"),
+            "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF"
+        );
+        assert_eq!(
+            n("huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/tree/main/"),
+            "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF"
+        );
+        assert_eq!(
+            n("https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/blob/main/Llama-3.2-1B-Instruct-Q5_K_M.gguf"),
+            "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q5_K_M"
+        );
+        assert_eq!(
+            n("ollama run hf.co/unsloth/gemma-3-1b-it-GGUF:Q8_0"),
+            "hf.co/unsloth/gemma-3-1b-it-GGUF:Q8_0"
+        );
+        let name = n("hf.co/unsloth/gemma-3-1b-it-GGUF:IQ4_XS");
+        assert!(valid_name(&name), "{name}");
+        assert_eq!(manifest_url(&name), None);
+        assert_eq!(
+            hf_parts(&name),
+            Some(("unsloth/gemma-3-1b-it-GGUF".into(), Some("IQ4_XS".into())))
+        );
+        assert_eq!(hf_parts("hf.co/../etc"), None);
+        assert!(
+            !valid_repo("a/b/c")
+                && !valid_repo("a/../b")
+                && !valid_repo("a/.x")
+                && valid_repo("a_b/c.d-e")
+        );
+        for (file, q) in [
+            ("Llama-3.2-1B-Instruct-Q4_K_M.gguf", Some("Q4_K_M")),
+            ("model.q8_0.gguf", Some("Q8_0")),
+            ("Qwen3-30B-A3B-IQ4_XS.gguf", Some("IQ4_XS")),
+            ("Q4_K_M/Big-Q4_K_M-00001-of-00002.gguf", Some("Q4_K_M")),
+            ("phi-4-BF16.gguf", Some("BF16")),
+            ("tiny-f16.gguf", Some("F16")),
+            ("Qwen2.5-7B.gguf", None),
+        ] {
+            assert_eq!(quant_of(file).as_deref(), q, "{file}");
+        }
+    }
+
+    #[test]
+    fn hugging_face_search_and_quantization_sizes() {
+        let found = search_results(&json!([
+            {"id": "bartowski/Llama-3.2-1B-Instruct-GGUF", "downloads": 900, "likes": 50, "pipeline_tag": "text-generation"},
+            {"id": "not a repo"}
+        ]));
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0]["name"],
+            "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF"
+        );
+        let tree = json!([
+            {"type": "file", "path": "README.md", "size": 10},
+            {"type": "directory", "path": "Q8_0"},
+            {"type": "file", "path": "M-Q4_K_M.gguf", "size": 133, "lfs": {"size": 800}},
+            {"type": "file", "path": "Q8_0/M-Q8_0-00001-of-00002.gguf", "size": 1000},
+            {"type": "file", "path": "Q8_0/M-Q8_0-00002-of-00002.gguf", "size": 500},
+            {"type": "file", "path": "mmproj-M-f16.gguf", "size": 100}
+        ]);
+        let files = gguf_files(&tree);
+        assert_eq!(files.len(), 4);
+        let q = quants_from(&files);
+        assert_eq!(q.len(), 2, "{q:?}");
+        // Smallest first; the projector is part of every download; split files add up.
+        assert_eq!(
+            (q[0]["quant"].as_str(), q[0]["bytes"].as_u64()),
+            (Some("Q4_K_M"), Some(900))
+        );
+        assert_eq!(q[0]["default"], true);
+        assert_eq!(
+            (
+                q[1]["quant"].as_str(),
+                q[1]["bytes"].as_u64(),
+                q[1]["files"].as_u64()
+            ),
+            (Some("Q8_0"), Some(1600), Some(2))
+        );
+        assert_eq!(q[1]["vision"], true);
     }
 }

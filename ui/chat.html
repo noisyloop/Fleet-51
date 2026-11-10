@@ -29,6 +29,9 @@
         <button class="pill" id="btn-autos">
           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6L13 3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
           Automations</button>
+        <button class="pill" id="btn-teams" title="Bots that work together on a goal by themselves">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="8" cy="9" r="3" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16.5" cy="9" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M2.5 19c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5M12.5 15.2c1-.5 2.4-.7 4-.7 2.7 0 4.9 1.5 5.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Teams</button>
         <button class="pill" id="btn-models">Models</button>
         <span class="net" id="net" role="status" title="No internet connection. Your bots and automations keep working on this computer; only downloading models needs the internet." hidden>Offline</span>
       </div>
@@ -53,6 +56,7 @@
         </button>
         <div class="menu" id="menu" hidden>
           <button id="menu-auto">New automation…</button>
+          <button id="menu-team">New team…</button>
           <button id="menu-window">Open in new window</button>
           <button id="menu-folder">Show files</button>
           <button id="menu-clear">Clear chat</button>
@@ -169,6 +173,63 @@
           <button type="button" class="pill" id="auto-run">Run now</button>
           <button type="button" class="pill danger-text" id="auto-delete">Delete automation</button>
         </div>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="teams-dlg" aria-labelledby="teams-title">
+    <form method="dialog">
+      <div class="dlg-head"><h2 id="teams-title">Teams</h2><span class="spacer"></span><button type="button" class="pill small light" id="teams-new">New</button><button class="round" value="cancel" aria-label="Close">✕</button></div>
+      <div class="dlg-body autos-body" id="teams-body"></div>
+    </form>
+  </dialog>
+
+  <dialog id="team-new-dlg" class="auto-dlg" aria-labelledby="team-new-title">
+    <form method="dialog" id="team-form" autocomplete="off">
+      <div class="auto-head">
+        <button class="round" value="cancel" aria-label="Close">✕</button>
+        <h2 id="team-new-title">New Team</h2>
+        <button type="button" class="pill" id="team-create" disabled>Start</button>
+      </div>
+      <div class="auto-body">
+        <input id="team-name" class="field" placeholder="Team Name" maxlength="80" autocomplete="off" aria-label="Team name">
+        <h3>Bots <span class="muted" id="team-count"></span></h3>
+        <div class="auto-bots" id="team-bots" role="group" aria-label="Bots in the team (they speak in this order)"></div>
+        <h3>Goal</h3>
+        <textarea id="team-goal" class="field" rows="5" placeholder="What should they work on together? For example: Plan a three-day trip to Lisbon on a small budget. One of you researches, one plans the days, one checks the costs." aria-label="Goal"></textarea>
+        <h3>Turns</h3>
+        <label class="field switch-row">
+          <span>Stop after</span>
+          <select id="team-turns" aria-label="Turns before stopping">
+            <option value="6">6 turns</option>
+            <option value="12" selected>12 turns</option>
+            <option value="20">20 turns</option>
+            <option value="40">40 turns</option>
+          </select>
+        </label>
+        <p class="muted small-note">The bots take turns by themselves until one says the goal is done or the turns run out. Each one keeps its own folder and settings (Run code, Think); teammates only see what it says. You can join in or stop it any time.</p>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="team-dlg" class="team-dlg" aria-labelledby="team-title">
+    <form method="dialog" id="team-view">
+      <div class="dlg-head">
+        <span class="team-faces" id="team-faces"></span>
+        <h2 id="team-title"></h2>
+        <span class="team-status" id="team-status"></span>
+        <span class="spacer"></span>
+        <button type="button" class="pill small" id="team-toggle">Stop</button>
+        <button type="button" class="pill small danger-text" id="team-delete">Delete</button>
+        <button class="round" value="cancel" aria-label="Close">✕</button>
+      </div>
+      <div class="team-goal" id="team-goal-view"></div>
+      <div class="msgs team-msgs" id="team-msgs" aria-live="polite"></div>
+      <div class="composer team-composer">
+        <textarea id="team-input" rows="1" placeholder="Join in: your message goes to the next bot" aria-label="Message the team"></textarea>
+        <button class="send" id="team-send" type="button" aria-label="Send">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </div>
     </form>
   </dialog>

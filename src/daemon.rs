@@ -83,6 +83,7 @@ pub struct Daemon {
     pub runtime: Mutex<Runtime>,
     pub ollama: Mutex<Option<std::process::Child>>,
     pub automations: crate::automations::Automations,
+    pub teams: crate::teams::Teams,
     /// Whether the internet is reachable. Bots work either way; only downloads need it.
     pub online: AtomicBool,
 }
@@ -193,9 +194,10 @@ impl Daemon {
         s: &Arc<Session>,
         text: &str,
         automation: Option<&str>,
+        team: Option<&str>,
         attachments: &[String],
     ) -> String {
-        let (id, live) = s.queue_prompt(text, automation, attachments);
+        let (id, live) = s.queue_prompt(text, automation, team, attachments);
         if !live && !s.is_running() {
             session::start(self.clone(), s.clone(), s.state().provider_session);
         }
@@ -255,6 +257,7 @@ impl Daemon {
 
     pub fn delete_bot(&self, s: &Arc<Session>) {
         crate::automations::delete_for_bot(self, &s.id);
+        crate::teams::delete_for_bot(self, &s.id);
         s.emit(Ev::Archived);
         s.emit(Ev::StopRequested);
         s.send(Cmd::Stop);
@@ -536,6 +539,7 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
         runtime: Mutex::new(Runtime::Checking),
         ollama: Mutex::new(None),
         automations: crate::automations::Automations::load(&home),
+        teams: crate::teams::Teams::load(&home),
         online: AtomicBool::new(true),
     });
 
@@ -599,6 +603,7 @@ pub async fn serve(home: Home, listen: &str) -> Result<()> {
     println!("Open: {url}/?token={token}");
     d.clone().start_runtime();
     crate::automations::start(d.clone());
+    crate::teams::start_watching(d.clone());
     watch_network(d.clone());
     let app = crate::server::router(d.clone());
     let d2 = d.clone();

@@ -125,6 +125,7 @@ let keepFree = 2e9; // Fleet-51 never lets a download leave less than this free
 let sandbox = false;
 let canRunCode = false; // on Windows, without a sandbox yet
 let autos = [];
+let teams = [];
 let prompts = new Map();
 let typingEl = null;
 
@@ -323,7 +324,9 @@ function render(e) {
     case 'prompt_queued': {
       const st = el('span', { class: 'st' });
       const files = (e.attachments || []).length ? el('div', { class: 'files' }, e.attachments.map((n) => el('span', { class: 'chip', title: 'Show in Finder', onclick: () => reveal(n) }, el('span', { text: `📎 ${n}` })))) : null;
-      add(el('div', { class: 'm-user' }, e.automation ? el('span', { class: 'auto-tag' }, '⚡ ' + e.automation) : null, files, e.text, st));
+      // A team's turn: the bot was sent the team chat; show it folded, under the team's name.
+      const body = e.team ? [el('span', { class: 'team-tag' }, '👥 ' + e.team), el('details', { class: 'team-prompt' }, el('summary', { text: 'Its turn in the team chat' }), e.text)] : [e.text];
+      add(el('div', { class: 'm-user' }, e.automation ? el('span', { class: 'auto-tag' }, '⚡ ' + e.automation) : null, files, ...body, st));
       prompts.set(e.id, st);
       scrollDown(true);
       break;
@@ -490,12 +493,17 @@ async function cancelDownload(name) {
 async function download(name) {
   name = name.trim();
   if (!name) return;
-  try { await api('/api/models/pull', { name }); pulls.set(name, { name, status: 'starting', completed: 0, total: 0, done: false }); renderModelsDialog(); renderSetup(); } catch (e) { toast(e.message); }
+  try {
+    // The service turns Hugging Face links into the name Ollama downloads (hf.co/owner/repo).
+    const r = await api('/api/models/pull', { name });
+    name = r.pulling || name;
+    pulls.set(name, { name, status: 'starting', completed: 0, total: 0, done: false }); renderModelsDialog(); renderSetup();
+  } catch (e) { toast(e.message); }
 }
 // Models dialog: a find box that filters both lists as you type, and downloads by exact name.
 let modelQuery = '';
 const modelLists = el('div', { class: 'model-lists' });
-const modelFind = el('input', { type: 'text', placeholder: 'Find a model, or type a name like qwen3:8b', 'aria-label': 'Find a model', spellcheck: 'false', oninput: (e) => { modelQuery = e.target.value.trim(); renderModelsDialog(); }, onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); if (modelQuery) download(modelQuery); } } });
+const modelFind = el('input', { type: 'text', placeholder: 'Find a model, type a name like qwen3:8b, or paste a Hugging Face link', 'aria-label': 'Find a model', spellcheck: 'false', oninput: (e) => { modelQuery = e.target.value.trim(); renderModelsDialog(); }, onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); if (modelQuery) download(modelQuery); } } });
 function renderModelsDialog() {
   if (!$('#models-dlg').open) return;
   const q = modelQuery.toLowerCase();
@@ -508,8 +516,9 @@ function renderModelsDialog() {
   const shown = suggested.filter((s) => !have(s.name) && match(`${s.name} ${s.note}`));
   const exact = q && !installed.some((m) => m.name === modelQuery) && !suggested.some((s) => s.name === modelQuery);
   const valid = /^[a-z0-9][a-z0-9._\/-]*(:[a-z0-9._-]+)?$/i.test(modelQuery);
+  const hf = hfName(modelQuery);
   // Offer "download this exact name" when it looks like a real name, not a search word.
-  const byName = exact && valid && (!shown.length || modelQuery.includes(':')) ? el('div', { class: 'mrow' }, el('b', { text: modelQuery }),
+  const byName = hf ? hfRepoRow(hf.repo, hf.quant) : exact && valid && (!shown.length || modelQuery.includes(':')) ? el('div', { class: 'mrow' }, el('b', { text: modelQuery }),
     el('button', { type: 'button', class: 'pill', disabled: !online, onclick: () => download(modelQuery) }, 'Download'),
     el('div', { class: 'sub', text: /cloud/.test(modelQuery) ? '☁ A cloud model: it runs on Ollama\'s servers, so chats with it leave this computer.' : 'Downloads this exact name from Ollama. Check its size first: some models are hundreds of GB.' })) : null;
   const mine = installed.filter((m) => match(`${m.name}${m.vision ? ' sees images vision' : ''}${m.cloud ? ' cloud' : ''}`));
@@ -519,7 +528,7 @@ function renderModelsDialog() {
     online ? null : el('div', { class: 'offline-note', text: "You're offline. Your downloaded models still work; downloading new ones needs the internet." }),
     byName,
     el('div', { class: 'model-list' }, el('h3', { text: 'On this computer' }),
-      mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
+      mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.name.startsWith('hf.co/') ? ' · from Hugging Face' : ''}${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
     el('div', { class: 'model-list' }, el('h3', { text: 'Free models to download' }),
       freeBytes != null ? el('div', { class: 'muted', text: `${gb(freeBytes)} free on this computer.` }) : null,
       shown.length ? shown.map((s) => {
@@ -530,7 +539,67 @@ function renderModelsDialog() {
           ? el('button', { type: 'button', class: 'pill', onclick: () => cancelDownload(s.name) }, 'Cancel')
           : el('button', { type: 'button', class: 'pill', disabled: !online || !ok, onclick: () => download(s.name) }, ok ? 'Download' : 'Too big'));
       }) : el('div', { class: 'muted', text: q ? 'No suggested model matches.' : 'You have them all.' })),
-    el('a', { class: 'browse', href: `https://ollama.com/search${q ? '?q=' + encodeURIComponent(modelQuery) : ''}`, target: '_blank', rel: 'noopener' }, `Browse all models on ollama.com${q ? ` for “${modelQuery}”` : ''} ↗`)].filter(Boolean));
+    hfSection(),
+    hf ? null : el('a', { class: 'browse', href: `https://ollama.com/search${q ? '?q=' + encodeURIComponent(modelQuery) : ''}`, target: '_blank', rel: 'noopener' }, `Browse all models on ollama.com${q ? ` for “${modelQuery}”` : ''} ↗`),
+    el('a', { class: 'browse', href: `https://huggingface.co/models?library=gguf${q && !hf ? '&search=' + encodeURIComponent(modelQuery) : ''}`, target: '_blank', rel: 'noopener' }, 'Browse GGUF models on Hugging Face ↗')].filter(Boolean));
+}
+
+// ---- Hugging Face ------------------------------------------------------------------------------
+// Ollama runs GGUF models straight from Hugging Face (hf.co/owner/repo:QUANT). The service does
+// the searching, since this page may only talk to Fleet-51 itself.
+let hfFound = null; // { q, loading, results, error }
+const hfQuants = new Map(); // repo → { loading, quants, error }
+function hfName(q) {
+  const s = q.trim().replace(/^ollama\s+(run|pull)\s+/i, '').replace(/^https?:\/\//i, '');
+  const m = s.match(/^(?:www\.)?(?:huggingface\.co|hf\.co)\/([\w.-]+)\/([\w.-]+)[^:\s]*(?::([\w.-]+))?$/i);
+  return m ? { repo: `${m[1]}/${m[2]}`, quant: m[3] || null } : null;
+}
+async function searchHf(q) {
+  hfFound = { q, loading: true, results: [] };
+  renderModelsDialog();
+  try { hfFound = { q, results: await api(`/api/models/hf?q=${encodeURIComponent(q)}`) }; } catch (e) { hfFound = { q, results: [], error: e.message }; }
+  renderModelsDialog();
+}
+async function loadQuants(repo) {
+  if (hfQuants.get(repo)?.quants) { hfQuants.delete(repo); renderModelsDialog(); return; } // a second press folds it
+  hfQuants.set(repo, { loading: true });
+  renderModelsDialog();
+  try { hfQuants.set(repo, { quants: (await api(`/api/models/hf/quants?repo=${encodeURIComponent(repo)}`)).quants }); } catch (e) { hfQuants.set(repo, { error: e.message }); }
+  renderModelsDialog();
+}
+const count = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
+// One Hugging Face repository, with its sizes (quantizations) to pick from once opened.
+function hfRepoRow(repo, quant, info) {
+  const st = hfQuants.get(repo);
+  const name = `hf.co/${repo}${quant ? ':' + quant : ''}`;
+  const sub = info ? `${count(info.downloads)} downloads · ${count(info.likes)} likes${info.task ? ' · ' + info.task : ''}` : 'From Hugging Face. Ollama downloads its GGUF file; pick a size (smaller is faster, bigger is smarter).';
+  const quants = st && st.quants ? el('div', { class: 'hf-quants' }, st.quants.map((q) => {
+    const p = pulls.get(q.name);
+    const ok = fits(q.bytes);
+    const busy = p && !p.done;
+    const done = installed.some((m) => m.name === q.name);
+    return el('div', { class: 'q' }, el('b', { text: q.quant + (q.default ? ' · recommended' : '') }),
+      done ? el('span', { class: 'muted', text: 'downloaded' })
+        : busy ? el('button', { type: 'button', class: 'pill small', onclick: () => cancelDownload(q.name) }, `Cancel ${pct(p)}%`)
+        : el('button', { type: 'button', class: 'pill small', disabled: !online || !ok, onclick: () => download(q.name) }, ok ? 'Download' : 'Too big'),
+      el('span', { class: 'sub', text: `${gb(q.bytes)}${q.files > 1 ? ` in ${q.files} parts` : ''}${q.vision ? ' · sees images' : ''}${ok ? '' : ` · too big for the ${gb(freeBytes)} free here`}` }));
+  })) : null;
+  return el('div', { class: 'mrow hf-row' }, el('b', { text: repo }),
+    quant ? el('button', { type: 'button', class: 'pill', disabled: !online, onclick: () => download(name) }, 'Download')
+      : el('button', { type: 'button', class: 'pill', disabled: !online || (st && st.loading), onclick: () => loadQuants(repo) }, st && st.loading ? 'Loading…' : st && st.quants ? 'Hide sizes' : 'Choose size'),
+    el('div', { class: 'sub' }, st && st.error ? `Failed: ${st.error}` : sub, ' ', el('a', { href: `https://huggingface.co/${repo}`, target: '_blank', rel: 'noopener' }, 'page ↗')),
+    quants);
+}
+function hfSection() {
+  const q = modelQuery;
+  if (!q || hfName(q)) return null;
+  const mine = hfFound && hfFound.q === q ? hfFound : null;
+  return el('div', { class: 'model-list' }, el('h3', { text: 'Hugging Face' }),
+    !mine ? el('button', { type: 'button', class: 'pill', disabled: !online, onclick: () => searchHf(q) }, `Search Hugging Face for “${q}”`)
+      : mine.loading ? el('div', { class: 'muted', text: 'Searching…' })
+      : mine.error ? el('div', { class: 'muted', text: `Failed: ${mine.error}` })
+      : mine.results.length ? mine.results.map((r) => hfRepoRow(r.repo, null, r))
+      : el('div', { class: 'muted', text: `No GGUF models on Hugging Face match “${q}”.` }));
 }
 
 function setOnline(v) {
@@ -710,6 +779,128 @@ function renderAutos() {
   }));
 }
 
+// ---- teams -------------------------------------------------------------------------------------
+// Bots that work on a goal together by themselves, taking turns in a shared chat.
+let teamDraft = null; // { members: [bot ids in speaking order] }
+let teamOpen = null; // id of the team shown in the team chat
+const teamBot = (id) => bots.find((b) => b.id === id);
+function faces(ids, size) { return ids.map(teamBot).filter(Boolean).slice(0, 4).map((b) => avatar(b.shape, b.color, size)); }
+const TEAM_STATUS = { idle: 'Not started', running: 'Working', done: 'Done', stopped: 'Stopped' };
+
+function openTeams() {
+  $('#teams-dlg').open || $('#teams-dlg').showModal();
+  renderTeams();
+}
+function renderTeams() {
+  if (!$('#teams-dlg').open) return;
+  if (!teams.length) {
+    $('#teams-body').replaceChildren(el('div', { class: 'autos-empty' }, el('div', { text: 'Put a few bots in a team, give them a goal, and they work on it together by themselves: one plans, another writes, another checks.' }), el('button', { type: 'button', class: 'pill primary', onclick: () => openNewTeam() }, 'New team')));
+    return;
+  }
+  $('#teams-body').replaceChildren(...[...teams].sort((a, b) => b.updated - a.updated).map((t) => {
+    const last = [...t.messages].reverse().find((m) => m.from !== 'system');
+    const who = t.current && teamBot(t.current);
+    return el('div', { class: 'arow team-row', role: 'button', tabindex: 0, onclick: () => openTeam(t.id), onkeydown: (e) => { if (e.key === 'Enter') openTeam(t.id); } },
+      el('span', { class: 'faces' }, faces(t.members, 40)),
+      el('b', { text: t.name }),
+      el('span', { class: 'team-status' + (t.status === 'running' ? ' running' : ''), text: TEAM_STATUS[t.status] || t.status }),
+      el('span', { class: 'sub', text: t.members.map((m) => teamBot(m)?.name).filter(Boolean).join(', ') }),
+      el('span', { class: 'last', text: who ? `${who.name} is working…` : last ? `${last.name}: ${last.text.replace(/\s+/g, ' ').slice(0, 120)}` : t.goal.slice(0, 120) }));
+  }));
+}
+
+function openNewTeam(withBot) {
+  if (bots.length < 2) { toast('A team needs at least two bots. Create another bot first.'); return; }
+  const first = withBot || current;
+  teamDraft = { members: bots.filter((b) => b.id === first).map((b) => b.id) };
+  $('#team-name').value = '';
+  $('#team-goal').value = '';
+  $('#team-turns').value = '12';
+  drawNewTeam();
+  if ($('#teams-dlg').open) $('#teams-dlg').close();
+  $('#team-new-dlg').showModal();
+  $('#team-name').focus();
+}
+function drawNewTeam() {
+  const m = teamDraft.members;
+  $('#team-bots').replaceChildren(...bots.map((b) => {
+    const i = m.indexOf(b.id);
+    return el('button', { type: 'button', 'aria-pressed': String(i >= 0), title: `${b.name} (${b.model || 'no model'})`, onclick: () => {
+      teamDraft.members = i >= 0 ? m.filter((x) => x !== b.id) : m.length >= 6 ? m : [...m, b.id];
+      if (i < 0 && m.length >= 6) toast('A team has at most 6 bots');
+      drawNewTeam();
+    } }, avatar(b.shape, b.color, 40), el('span', { text: b.name }), el('span', { class: 'order', text: i >= 0 ? `${i + 1}${i === 0 ? ' · first' : ''}` : '' }));
+  }));
+  $('#team-count').textContent = m.length ? `· ${m.length} picked, they speak in this order` : '· pick 2 to 6';
+  validTeam();
+}
+function validTeam() {
+  $('#team-create').disabled = !teamDraft || teamDraft.members.length < 2 || !$('#team-name').value.trim() || !$('#team-goal').value.trim();
+}
+async function createTeam() {
+  const body = { name: $('#team-name').value.trim(), goal: $('#team-goal').value.trim(), members: teamDraft.members, max_turns: Number($('#team-turns').value) };
+  try {
+    const t = await api('/api/teams', body);
+    teams = teams.filter((x) => x.id !== t.id).concat(t);
+    $('#team-new-dlg').close();
+    openTeam(t.id);
+  } catch (e) { toast(e.message); }
+}
+
+function openTeam(id) {
+  teamOpen = id;
+  if ($('#teams-dlg').open) $('#teams-dlg').close();
+  $('#team-msgs').replaceChildren();
+  $('#team-dlg').open || $('#team-dlg').showModal();
+  renderTeamView(true);
+  $('#team-input').focus();
+}
+function renderTeamView(force) {
+  const t = teams.find((x) => x.id === teamOpen);
+  if (!$('#team-dlg').open) return;
+  if (!t) { $('#team-dlg').close(); return; }
+  $('#team-faces').replaceChildren(...faces(t.members, 28));
+  $('#team-title').textContent = t.name;
+  const st = $('#team-status');
+  st.textContent = TEAM_STATUS[t.status] || t.status;
+  st.className = 'team-status' + (t.status === 'running' ? ' running' : '');
+  $('#team-goal-view').textContent = `Goal: ${t.goal}\n${t.members.map((m) => teamBot(m)?.name).filter(Boolean).join(' → ')} · ${t.turns} of ${t.max_turns} turns`;
+  const tg = $('#team-toggle');
+  tg.textContent = t.status === 'running' ? 'Stop' : t.status === 'idle' ? 'Start' : 'Continue';
+  tg.title = t.status === 'running' ? 'Stop after the bot that is speaking finishes' : `Let them work for up to ${t.max_turns} more turns`;
+  const box = $('#team-msgs');
+  const atEnd = force || box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  const msgs = t.messages.map((m) => {
+    if (m.from === 'system') return el('div', { class: 'm-sys', text: m.text });
+    if (m.from === 'you') return el('div', { class: 't-msg you' }, el('div', { class: 'm-user', text: m.text }));
+    const b = teamBot(m.from);
+    return el('div', { class: 't-msg' }, el('span', { class: 'avatar' }, b ? avatar(b.shape, b.color, 30) : null),
+      el('span', { class: 'who' }, m.name, el('span', { class: 'when', text: whenText(m.at) })),
+      el('div', { class: 'm-bot' }, markdown(m.text)));
+  });
+  const who = t.current && teamBot(t.current);
+  if (who) msgs.push(el('div', { class: 't-msg' }, el('span', { class: 'avatar' }, avatar(who.shape, who.color, 30)), el('span', { class: 'who', text: `${who.name} is working…` }), el('div', { class: 'typing', 'aria-label': 'Working' }, el('span'), el('span'), el('span'))));
+  if (!msgs.length) msgs.push(el('div', { class: 'hello' }, el('div', { text: t.status === 'idle' ? 'Press Start and the team gets to work.' : 'Starting…' })));
+  box.replaceChildren(...msgs);
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+async function teamSay() {
+  const text = $('#team-input').value.trim();
+  if (!text || !teamOpen) return;
+  $('#team-input').value = '';
+  try { await api(`/api/teams/${teamOpen}/say`, { text }); } catch (e) { toast(e.message); $('#team-input').value = text; }
+}
+async function teamToggle() {
+  const t = teams.find((x) => x.id === teamOpen);
+  if (!t) return;
+  try { await api(`/api/teams/${t.id}/${t.status === 'running' ? 'stop' : 'start'}`, {}); } catch (e) { toast(e.message); }
+}
+async function teamDelete() {
+  const t = teams.find((x) => x.id === teamOpen);
+  if (!t || !confirm(`Delete the team "${t.name}" and its chat? The bots, their own chats and their files stay.`)) return;
+  try { await api(`/api/teams/${t.id}/delete`, {}); teams = teams.filter((x) => x.id !== t.id); $('#team-dlg').close(); openTeams(); } catch (e) { toast(e.message); }
+}
+
 // The first model is small so setup is quick; once it works, offer a smarter one that fits.
 const UPGRADE = 'qwen3:4b';
 let upgradeFor = null; // bot to switch once the download finishes
@@ -826,6 +1017,7 @@ async function boot() {
     sandbox = !!r.sandbox;
     canRunCode = r.run_code ?? sandbox;
     autos = await api('/api/automations');
+    teams = await api('/api/teams').catch(() => []);
     await loadModels();
     await refresh();
   } catch { return; }
@@ -843,6 +1035,7 @@ async function boot() {
       return;
     }
     if (msg.kind === 'state') { onState(msg); return; }
+    if (msg.kind === 'teams') { teams = msg.teams; renderTeams(); renderTeamView(); return; }
     if (msg.kind === 'automations') { autos = msg.automations; renderAutos(); if ($('#auto-dlg').open) drawHistory(); return; }
     if (msg.kind === 'notice') { toast(`${msg.title}: ${msg.body.slice(0, 120)}`); return; }
     if (msg.kind === 'network') setOnline(msg.online);
@@ -878,6 +1071,17 @@ $('#btn-search').onclick = () => { const w = $('#search-wrap'); w.hidden = !w.hi
 $('#search').oninput = renderBots;
 $('#btn-models').onclick = () => { modelQuery = ''; modelFind.value = ''; $('#models-dlg').showModal(); renderModelsDialog(); modelFind.focus(); loadModels().then(renderModelsDialog); };
 $('#btn-autos').onclick = openAutos;
+$('#btn-teams').onclick = openTeams;
+$('#teams-new').onclick = () => openNewTeam();
+$('#menu-team').onclick = () => { const b = bot(); openNewTeam(b && b.id); };
+$('#team-name').oninput = validTeam;
+$('#team-goal').oninput = validTeam;
+$('#team-create').onclick = createTeam;
+$('#team-send').onclick = teamSay;
+$('#team-input').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); teamSay(); } });
+$('#team-toggle').onclick = teamToggle;
+$('#team-delete').onclick = teamDelete;
+$('#team-dlg').addEventListener('close', () => { teamOpen = null; });
 $('#upgrade-yes').onclick = () => { const b = bot(); upgradeFor = b ? b.id : null; download(UPGRADE).then(renderUpgrade); };
 $('#upgrade-no').onclick = () => { store.set('upgrade-dismissed', true); renderUpgrade(); };
 $('#autos-new').onclick = () => openAuto(null);
