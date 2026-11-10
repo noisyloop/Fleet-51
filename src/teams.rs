@@ -337,6 +337,14 @@ pub fn delete_for_bot(d: &Daemon, bot: &str) {
     });
 }
 
+/// Whether a reply ends with [DONE]. Only the very end counts, so a bot that mentions it ("I'll
+/// say [DONE] when we finish") doesn't stop the team; markdown or a full stop after it is fine.
+pub fn says_done(text: &str) -> bool {
+    text.trim_end_matches(|c: char| c.is_whitespace() || "*_`.!".contains(c))
+        .to_ascii_uppercase()
+        .ends_with(DONE)
+}
+
 /// What a bot is sent for its turn: who it is in the team, the goal, and what was said since
 /// its last turn.
 pub fn turn_prompt(t: &Team, me: &str, names: &HashMap<String, String>) -> String {
@@ -513,7 +521,7 @@ fn finish(d: &Arc<Daemon>, turn: Turn, ok: bool, summary: Option<String>) {
             bot.clone(),
             t.messages.last().map(|m| m.id.clone()).unwrap_or_default(),
         );
-        if text.contains(DONE) && t.status == TeamStatus::Running {
+        if says_done(&text) && t.status == TeamStatus::Running {
             t.status = TeamStatus::Done;
             push(
                 t,
@@ -667,6 +675,17 @@ mod tests {
             "{pa}"
         );
         assert!(pa.ends_with("Your turn, Ada."));
+    }
+
+    #[test]
+    fn only_a_reply_that_ends_with_done_ends_the_team() {
+        assert!(says_done("All planned. [DONE]"));
+        assert!(says_done("All planned.\n\n**[DONE]**\n"));
+        assert!(says_done("finished [done]."));
+        assert!(!says_done(
+            "I'll write [DONE] when the plan is finished. First, the budget."
+        ));
+        assert!(!says_done("Not done yet."));
     }
 
     #[test]
