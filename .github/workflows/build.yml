@@ -9,6 +9,11 @@ on:
   pull_request:
     paths-ignore: ["**.md", "docs/**", "**.txt"]
   workflow_dispatch:
+    inputs:
+      iso:
+        description: "Also build the bootable ISO (slow)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -231,6 +236,8 @@ jobs:
 
   iso:
     name: Bootable ISO (x86-64, for VirtualBox)
+    # A run started by hand can leave it out; pushes and releases always build it.
+    if: github.event_name != 'workflow_dispatch' || inputs.iso
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
