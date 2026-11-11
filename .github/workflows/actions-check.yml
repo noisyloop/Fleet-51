@@ -1,0 +1,11 @@
+# Temporary: checks that GitHub Actions runs at all for this repository. Removed right after.
+name: Actions check
+on:
+  push:
+    branches: [claude/optimistic-pascal-ta96u7]
+    paths: [".github/workflows/actions-check.yml"]
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Actions runs"
