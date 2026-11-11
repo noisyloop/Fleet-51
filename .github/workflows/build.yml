@@ -9,6 +9,11 @@ on:
   pull_request:
     paths-ignore: ["**.md", "docs/**", "**.txt"]
   workflow_dispatch:
+    inputs:
+      iso:
+        description: "Also build the bootable ISO (slow)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -25,6 +30,11 @@ jobs:
         run: cargo test
       - name: End-to-end smoke test (stand-in Ollama)
         run: scripts/smoke.sh
+      # Search, sizes and the no-login check against the real Hugging Face. An outage there
+      # never fails the build; the step shows as failed in the log instead.
+      - name: Hugging Face, live (no login)
+        continue-on-error: true
+        run: cargo test hugging_face_live -- --ignored --nocapture
 
   macos:
     name: macOS app (.dmg)
@@ -226,6 +236,8 @@ jobs:
 
   iso:
     name: Bootable ISO (x86-64, for VirtualBox)
+    # A run started by hand can leave it out; pushes and releases always build it.
+    if: github.event_name != 'workflow_dispatch' || inputs.iso
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

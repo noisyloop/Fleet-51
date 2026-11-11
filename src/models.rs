@@ -630,6 +630,47 @@ mod tests {
         assert!(free_bytes().is_some_and(|b| b > 0), "free space unknown");
     }
 
+    /// Against the real Hugging Face (needs the internet): `cargo test -- --ignored hugging_face_live`.
+    /// The build runs it, without failing the build if Hugging Face is down.
+    #[test]
+    #[ignore]
+    fn hugging_face_live() {
+        let found = hf_search("Llama-3.2-1B-Instruct").expect("search");
+        assert!(!found.is_empty(), "no search results");
+        let repos: Vec<&str> = found.iter().filter_map(|f| f["repo"].as_str()).collect();
+        println!("search: {repos:?}");
+        assert!(
+            !repos.iter().any(|r| r.starts_with("meta-llama/")),
+            "a gated repo was offered: {repos:?}"
+        );
+        let q = hf_quants("https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF")
+            .expect("sizes");
+        let quants = q["quants"].as_array().expect("quants");
+        println!("sizes: {}", serde_json::to_string(quants).unwrap());
+        let q4 = quants
+            .iter()
+            .find(|x| x["quant"] == "Q4_K_M")
+            .expect("Q4_K_M listed");
+        let bytes = q4["bytes"].as_u64().unwrap();
+        assert!(
+            (500_000_000..1_500_000_000).contains(&bytes),
+            "Q4_K_M is {bytes} bytes"
+        );
+        assert_eq!(
+            q4["name"],
+            "hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:Q4_K_M"
+        );
+        assert_eq!(
+            download_size("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF"),
+            Some(bytes)
+        );
+        hf_check_public("hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF").expect("public repo refused");
+        let err = hf_check_public("hf.co/meta-llama/Llama-3.2-1B")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("needs a Hugging Face login"), "{err}");
+    }
+
     #[test]
     fn hugging_face_names_links_and_quantizations() {
         let n = |s| normalize_name(s);
