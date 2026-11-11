@@ -8,4 +8,5 @@ jobs:
   hello:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Actions runs"
+      - uses: actions/checkout@v4
+      - run: echo "Actions runs, and may use actions/checkout"
