@@ -8,7 +8,7 @@
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -422,6 +422,26 @@ fn chat(
         bail!("{msg}");
     }
     Ok(from_native(&body))
+}
+
+/// Say hello to a model once, the way a chat would (same context rules), to see whether it runs
+/// here. Returns its short reply and how many seconds it took.
+pub fn test_model(model: &str) -> Result<(String, f64)> {
+    let info = show(model);
+    let size = crate::models::installed().ok().and_then(|l| {
+        l.iter()
+            .find(|m| m["name"].as_str() == Some(model))
+            .and_then(|m| m["size"].as_u64())
+    });
+    let started = Instant::now();
+    let messages = [json!({"role": "user", "content": "Say hello in one short sentence."})];
+    let reply = chat(model, false, context_size(&info, size), &messages, None)?;
+    let text = reply["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Ok((text, started.elapsed().as_secs_f64()))
 }
 
 /// One message in Ollama's native shape: images as base64, tool call arguments as objects.
