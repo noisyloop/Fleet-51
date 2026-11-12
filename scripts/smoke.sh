@@ -200,6 +200,28 @@ team "$TEAM" "['messages'][-1]['text']" | grep -q "says the goal is done" || { a
 api "/api/teams/$TEAM/delete" '{}' >/dev/null
 [ "$(api /api/teams | json 'len(d)')" = "0" ] || fail "team not deleted"
 
+step "Teams: a failed or empty reply is tried once more; a bot that keeps failing stops the team"
+said() { api /api/teams | json "' '.join(m['name'] for m in [t for t in d if t['id']=='$1'][0]['messages'] if m['from']!='system')"; }
+notes() { api /api/teams | json "' | '.join(m['text'] for m in [t for t in d if t['id']=='$1'][0]['messages'] if m['from']=='system')"; }
+for WORD in flaky quiet; do
+  T=$(api /api/teams "{\"name\":\"$WORD\",\"goal\":\"a $WORD job\",\"members\":[\"$FLEET\",\"$SCOUT\"],\"max_turns\":2}" | json 'd["id"]')
+  for _ in $(seq 150); do [ "$(team "$T" "['status']")" = "done" ] && break; sleep 0.2; done
+  [ "$(team "$T" "['status']")" = "done" ] || { api /api/teams; fail "$WORD team did not recover"; }
+  [ "$(said "$T")" = "Fleet Scout" ] || { api /api/teams; fail "$WORD team: wrong speakers: $(said "$T")"; }
+  [ "$(team "$T" "['turns']")" = "2" ] || fail "$WORD team: the second try was counted as a turn"
+  [ "$(notes "$T" | grep -o "Trying once more" | wc -l | tr -d ' ')" = "1" ] || { api /api/teams; fail "$WORD team: expected one retry"; }
+  team "$T" "['messages']" | grep -q "(no reply)" && fail "$WORD team passed on an empty reply"
+  api "/api/teams/$T/delete" '{}' >/dev/null
+done
+T=$(api /api/teams "{\"name\":\"Stuck\",\"goal\":\"a hopeless job\",\"members\":[\"$FLEET\",\"$SCOUT\"],\"max_turns\":2}" | json 'd["id"]')
+for _ in $(seq 150); do [ "$(team "$T" "['status']")" = "stopped" ] && break; sleep 0.2; done
+[ "$(team "$T" "['status']")" = "stopped" ] || { api /api/teams; fail "a team whose bot keeps failing did not stop"; }
+[ "$(notes "$T" | grep -o "Trying once more" | wc -l | tr -d ' ')" = "1" ] || { api /api/teams; fail "expected exactly one retry"; }
+notes "$T" | grep -q "could not reply: model runner has unexpectedly stopped" || { api /api/teams; fail "the reason for stopping is not shown"; }
+[ -z "$(said "$T")" ] || fail "a failed reply reached the team chat"
+api "/api/teams/$T/delete" '{}' >/dev/null
+[ "$(api /api/teams | json 'len(d)')" = "0" ] || fail "teams not deleted"
+
 step "Hugging Face: a model page link downloads as hf.co/<owner>/<repo>"
 api /api/models/pull '{"name":"https://huggingface.co/someone/Tiny-GGUF/blob/main/Tiny-Q8_0.gguf"}' | grep -q '"pulling":"hf.co/someone/Tiny-GGUF:Q8_0"' || fail "Hugging Face link not understood"
 
