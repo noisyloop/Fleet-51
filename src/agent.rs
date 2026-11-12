@@ -408,7 +408,10 @@ fn chat(
     let mut resp = agent
         .post(&format!("{}/api/chat", ollama_root()))
         .send_json(body)
-        .context("the model engine is not running yet")?;
+        .map_err(|e| {
+            // Not only "not started": a model that crashes the engine drops the connection too.
+            anyhow::anyhow!("lost contact with the model engine ({e}); it may still be starting, or the model crashed it")
+        })?;
     let status = resp.status();
     let body: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
     if !status.is_success() {
@@ -762,6 +765,22 @@ pub fn run(o: Opts) -> Result<()> {
                     text_mode = true;
                     enter_text_mode(&mut messages, &tools);
                     reply = chat(&model, o.think, num_ctx, &messages, None);
+                }
+            }
+            // Some models (often GGUFs from Hugging Face) fail to compute at a large context
+            // size. Try once more with a small one before giving up.
+            if let Err(e) = &reply {
+                let s = e.to_string();
+                if (s.contains("Compute error") || s.contains("llama-server"))
+                    && num_ctx.is_none_or(|n| n > 4096)
+                {
+                    reply = chat(
+                        &model,
+                        o.think,
+                        Some(4096),
+                        &messages,
+                        (!text_mode).then_some(&tools),
+                    );
                 }
             }
             let body = match reply {

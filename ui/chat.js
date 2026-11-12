@@ -371,7 +371,8 @@ async function undo(id, btn) {
 }
 function friendlyError(msg) {
   if (/not found|pull/i.test(msg)) return `This model isn't downloaded yet. Pick another from the menu above, or download it in Models. (${msg})`;
-  if (/cannot reach|connection/i.test(msg)) return 'The model engine is not running yet. It should start on its own in a moment.';
+  if (/compute error|llama-server/i.test(msg)) return `The model engine failed while running this model. Models from Hugging Face sometimes don't work with the engine; try a smaller size (quantization) or another model. (${msg})`;
+  if (/lost contact|cannot reach|connection/i.test(msg)) return `The model engine is not responding. It may still be starting, or this model crashed it. (${msg})`;
   return msg;
 }
 
