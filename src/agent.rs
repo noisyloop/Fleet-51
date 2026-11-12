@@ -982,8 +982,20 @@ mod tests {
     #[test]
     fn the_context_never_exceeds_what_the_model_was_made_for() {
         let small = json!({"model_info": {"llama.context_length": 2048}});
-        assert_eq!(context_size(&small), Some(2048));
-        assert!(context_size(&Value::Null).unwrap() >= 8192);
+        assert_eq!(context_size(&small, None), Some(2048));
+        assert!(context_size(&Value::Null, None).unwrap() >= 8192);
+    }
+
+    #[test]
+    fn a_model_that_nearly_fills_memory_gets_a_small_context() {
+        // Skipped where the memory size or the user's own setting makes the answer different.
+        let Some(gb) = crate::runtime::memory_gb() else { return };
+        if std::env::var("OLLAMA_CONTEXT_LENGTH").is_ok() {
+            return;
+        }
+        let huge = gb * 1_000_000_000;
+        assert_eq!(context_size(&Value::Null, Some(huge)), Some(4096));
+        assert!(context_size(&Value::Null, Some(1_000_000_000)).unwrap() >= 8192);
     }
 
     #[test]
