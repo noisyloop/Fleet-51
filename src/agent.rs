@@ -408,7 +408,10 @@ fn chat(
     let mut resp = agent
         .post(&format!("{}/api/chat", ollama_root()))
         .send_json(body)
-        .context("the model engine is not running yet")?;
+        .map_err(|e| {
+            // Not only "not started": a model that crashes the engine drops the connection too.
+            anyhow::anyhow!("lost contact with the model engine ({e}); it may still be starting, or the model crashed it")
+        })?;
     let status = resp.status();
     let body: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
     if !status.is_success() {
@@ -489,15 +492,23 @@ fn show(model: &str) -> Value {
 /// How many tokens of conversation to give a model: as much as this computer's memory
 /// comfortably holds, never more than the model was made for. An OLLAMA_CONTEXT_LENGTH the user
 /// set themselves wins.
-fn context_size(info: &Value) -> Option<u64> {
+fn context_size(info: &Value, model_size: Option<u64>) -> Option<u64> {
     if std::env::var("OLLAMA_CONTEXT_LENGTH").is_ok_and(|v| !v.trim().is_empty()) {
         return None;
     }
-    let wanted = match crate::runtime::memory_gb() {
+    let mem = crate::runtime::memory_gb();
+    let mut wanted = match mem {
         Some(gb) if gb >= 24 => 32768,
         Some(gb) if gb >= 12 => 16384,
         _ => 8192,
     };
+    // A model that nearly fills memory has no room left for a big context: chats start fine,
+    // then fail with a "Compute error" as they grow. Ask for less so the weights keep the room.
+    if let (Some(gb), Some(size)) = (mem, model_size) {
+        if size as f64 > gb as f64 * 1e9 * 0.5 {
+            wanted = wanted.min(4096);
+        }
+    }
     let trained = info["model_info"]
         .as_object()
         .and_then(|i| {
@@ -720,7 +731,12 @@ pub fn run(o: Opts) -> Result<()> {
             .collect();
         let images = crate::files::image_urls(&root, &attached);
         let info = show(&model);
-        let num_ctx = context_size(&info);
+        let model_size = crate::models::installed().ok().and_then(|l| {
+            l.iter()
+                .find(|m| m["name"].as_str() == Some(model.as_str()))
+                .and_then(|m| m["size"].as_u64())
+        });
+        let num_ctx = context_size(&info, model_size);
         let sees = !images.is_empty() && can_see(&info);
         let text = if attached.is_empty() {
             text
@@ -762,6 +778,22 @@ pub fn run(o: Opts) -> Result<()> {
                     text_mode = true;
                     enter_text_mode(&mut messages, &tools);
                     reply = chat(&model, o.think, num_ctx, &messages, None);
+                }
+            }
+            // Some models (often GGUFs from Hugging Face) fail to compute at a large context
+            // size. Try once more with a small one before giving up.
+            if let Err(e) = &reply {
+                let s = e.to_string();
+                if (s.contains("Compute error") || s.contains("llama-server"))
+                    && num_ctx.is_none_or(|n| n > 4096)
+                {
+                    reply = chat(
+                        &model,
+                        o.think,
+                        Some(4096),
+                        &messages,
+                        (!text_mode).then_some(&tools),
+                    );
                 }
             }
             let body = match reply {
@@ -950,8 +982,20 @@ mod tests {
     #[test]
     fn the_context_never_exceeds_what_the_model_was_made_for() {
         let small = json!({"model_info": {"llama.context_length": 2048}});
-        assert_eq!(context_size(&small), Some(2048));
-        assert!(context_size(&Value::Null).unwrap() >= 8192);
+        assert_eq!(context_size(&small, None), Some(2048));
+        assert!(context_size(&Value::Null, None).unwrap() >= 8192);
+    }
+
+    #[test]
+    fn a_model_that_nearly_fills_memory_gets_a_small_context() {
+        // Skipped where the memory size or the user's own setting makes the answer different.
+        let Some(gb) = crate::runtime::memory_gb() else { return };
+        if std::env::var("OLLAMA_CONTEXT_LENGTH").is_ok() {
+            return;
+        }
+        let huge = gb * 1_000_000_000;
+        assert_eq!(context_size(&Value::Null, Some(huge)), Some(4096));
+        assert!(context_size(&Value::Null, Some(1_000_000_000)).unwrap() >= 8192);
     }
 
     #[test]

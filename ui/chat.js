@@ -371,7 +371,8 @@ async function undo(id, btn) {
 }
 function friendlyError(msg) {
   if (/not found|pull/i.test(msg)) return `This model isn't downloaded yet. Pick another from the menu above, or download it in Models. (${msg})`;
-  if (/cannot reach|connection/i.test(msg)) return 'The model engine is not running yet. It should start on its own in a moment.';
+  if (/compute error|llama-server/i.test(msg)) return `The model engine failed while running this model. Models from Hugging Face sometimes don't work with the engine; try a smaller size (quantization) or another model. (${msg})`;
+  if (/lost contact|cannot reach|connection/i.test(msg)) return `The model engine is not responding. It may still be starting, or this model crashed it. (${msg})`;
   return msg;
 }
 
@@ -475,6 +476,21 @@ function pct(p) { return p.total ? Math.floor((p.completed * 100) / p.total) : 0
 const gb = (b) => `${(b / 1e9).toFixed(1)} GB`;
 // Would a download of this size leave enough free space? Unknown sizes are checked as they download.
 function fits(bytes) { return bytes == null || freeBytes == null || bytes + keepFree <= freeBytes; }
+// A model much bigger than this computer's memory tends to fail while chatting (a "Compute error"),
+// or crawl. Only a warning: a graphics card with its own memory can run bigger ones.
+function heavy(bytes) { return bytes != null && memoryGb != null && bytes > memoryGb * 1e9 * 0.75; }
+const HEAVY_NOTE = () => `may be too big for this computer's ${memoryGb} GB of memory`;
+async function deleteModel(m) {
+  const size = m.cloud ? '' : ` This frees ${(m.size / 1e9).toFixed(1)} GB; you can download it again later.`;
+  if (!confirm(`Delete the model ${m.name}?${size}`)) return;
+  try {
+    await api('/api/models/delete', { name: m.name });
+    installed = installed.filter((x) => x.name !== m.name);
+    renderModelsDialog();
+    toast(`Deleted ${m.name}`);
+    loadModels();
+  } catch (e) { toast(e.message); }
+}
 async function loadModels() {
   try {
     const m = await api('/api/models');
@@ -528,14 +544,14 @@ function renderModelsDialog() {
     online ? null : el('div', { class: 'offline-note', text: "You're offline. Your downloaded models still work; downloading new ones needs the internet." }),
     byName,
     el('div', { class: 'model-list' }, el('h3', { text: 'On this computer' }),
-      mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.name.startsWith('hf.co/') ? ' · from Hugging Face' : ''}${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
+      mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.name.startsWith('hf.co/') ? ' · from Hugging Face' : ''}${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}${!m.cloud && heavy(m.size) ? ` · ${HEAVY_NOTE()}` : ''}`, bot() && bot().model === m.name ? el('span', { class: 'muted', text: 'in use' }) : el('button', { type: 'button', class: 'pill', onclick: () => deleteModel(m) }, 'Delete'))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
     el('div', { class: 'model-list' }, el('h3', { text: 'Free models to download' }),
       freeBytes != null ? el('div', { class: 'muted', text: `${gb(freeBytes)} free on this computer.` }) : null,
       shown.length ? shown.map((s) => {
         const p = pulls.get(s.name);
         const ok = fits(s.bytes);
         const busy = p && !p.done;
-        return row(s.name, ok ? `${s.size} · ${s.note}` : `${s.size} · too big for the ${gb(freeBytes)} free here (Fleet-51 keeps ${gb(keepFree)} free)`, busy
+        return row(s.name, ok ? `${s.size} · ${s.note}${heavy(s.bytes) ? ` · ${HEAVY_NOTE()}` : ''}` :`${s.size} · too big for the ${gb(freeBytes)} free here (Fleet-51 keeps ${gb(keepFree)} free)`, busy
           ? el('button', { type: 'button', class: 'pill', onclick: () => cancelDownload(s.name) }, 'Cancel')
           : el('button', { type: 'button', class: 'pill', disabled: !online || !ok, onclick: () => download(s.name) }, ok ? 'Download' : 'Too big'));
       }) : el('div', { class: 'muted', text: q ? 'No suggested model matches.' : 'You have them all.' })),
@@ -581,8 +597,8 @@ function hfRepoRow(repo, quant, info) {
     return el('div', { class: 'q' }, el('b', { text: q.quant + (q.default ? ' · recommended' : '') }),
       done ? el('span', { class: 'muted', text: 'downloaded' })
         : busy ? el('button', { type: 'button', class: 'pill small', onclick: () => cancelDownload(q.name) }, `Cancel ${pct(p)}%`)
-        : el('button', { type: 'button', class: 'pill small', disabled: !online || !ok, onclick: () => download(q.name) }, ok ? 'Download' : 'Too big'),
-      el('span', { class: 'sub', text: `${gb(q.bytes)}${q.files > 1 ? ` in ${q.files} parts` : ''}${q.vision ? ' · sees images' : ''}${ok ? '' : ` · too big for the ${gb(freeBytes)} free here`}` }));
+        : el('button', { type: 'button', class: 'pill small', disabled: !online || !ok, onclick: () => download(q.name) }, !ok ? 'Too big' : heavy(q.bytes) ? 'Download anyway' : 'Download'),
+      el('span', { class: 'sub', text: `${gb(q.bytes)}${q.files > 1 ? ` in ${q.files} parts` : ''}${q.vision ? ' · sees images' : ''}${ok ? '' : ` · too big for the ${gb(freeBytes)} free here`}${ok && heavy(q.bytes) ? ` · ${HEAVY_NOTE()}` : ''}` }));
   })) : null;
   return el('div', { class: 'mrow hf-row' }, el('b', { text: repo }),
     quant ? el('button', { type: 'button', class: 'pill', disabled: !online, onclick: () => download(name) }, 'Download')
