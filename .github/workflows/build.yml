@@ -13,7 +13,7 @@ on:
       iso:
         description: "Also build the bootable ISO (slow)"
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
@@ -38,7 +38,8 @@ jobs:
 
   macos:
     name: macOS app (.dmg)
-    runs-on: macos-14
+    # macos-14 was retired by GitHub (its jobs are cancelled before they start).
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Add both Mac targets
@@ -236,8 +237,8 @@ jobs:
 
   iso:
     name: Bootable ISO (x86-64, for VirtualBox)
-    # A run started by hand can leave it out; pushes and releases always build it.
-    if: github.event_name != 'workflow_dispatch' || inputs.iso
+    # Not part of builds or releases any more (0.5.8 on): only when a run started by hand asks.
+    if: github.event_name == 'workflow_dispatch' && inputs.iso
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -293,7 +294,8 @@ jobs:
 
   release:
     name: Release
-    needs: [test, macos, windows, iso]
+    # Releases carry the Mac and Windows apps; the ISO is no longer part of them.
+    needs: [test, macos, windows]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
@@ -324,7 +326,7 @@ jobs:
             echo "v$VERSION is already released; nothing to publish."
             exit 0
           fi
-          gh release create "v$VERSION" dist/Fleet-51-macos.dmg dist/Fleet-51-windows-setup.exe dist/Fleet-51-x86_64.iso \
+          gh release create "v$VERSION" dist/Fleet-51-macos.dmg dist/Fleet-51-windows-setup.exe \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Fleet-51 $VERSION" --generate-notes --latest
       - name: Attach to GitHub release (tags only)
         if: startsWith(github.ref, 'refs/tags/')
@@ -333,4 +335,3 @@ jobs:
           files: |
             dist/Fleet-51-macos.dmg
             dist/Fleet-51-windows-setup.exe
-            dist/Fleet-51-x86_64.iso

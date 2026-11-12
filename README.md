@@ -27,7 +27,7 @@ no subscription, no usage limit, and it keeps working on a plane.
 |---|---|
 | ![Create New Bot: name, alien shape and colour](docs/screenshots/new-bot.png) | ![Bot list on a phone](docs/screenshots/phone-bots.png) |
 
-## What's new (next release)
+## What's new in 0.5.8
 
 - **Teams: bots that work together by themselves.** Put 2 to 6 bots in a team (**Teams › New**, or a
   bot's **⋯ › New team…**), give them a goal, and they take turns in a shared chat: each one is sent
@@ -38,6 +38,8 @@ no subscription, no usage limit, and it keeps working on a plane.
   (quantization) and download it, or paste a Hugging Face link. Ollama runs it like any other
   model (`hf.co/<owner>/<repo>:<quant>`); sizes are checked against your free disk space first.
   No Hugging Face account or login needed: only public, ungated models are offered.
+- **The VirtualBox ISO stays at 0.5.7.** Releases now carry the Mac and Windows apps only; the
+  [0.5.7 ISO](#run-in-a-virtual-machine-virtualbox) is still available to download.
 
 ## What's new in 0.5.7
 
@@ -178,7 +180,8 @@ Fleet-51 also comes as a bootable ISO: a small Linux system that starts Fleet-51
 itself. Everything stays inside the VM, and Run code is sandboxed there too. It's for Intel/AMD
 computers.
 
-1. Download **[Fleet-51-x86_64.iso](https://github.com/noisyloop/Fleet-51/releases/latest/download/Fleet-51-x86_64.iso)**.
+1. Download **[Fleet-51-x86_64.iso](https://github.com/noisyloop/Fleet-51/releases/download/v0.5.7/Fleet-51-x86_64.iso)**
+   (from 0.5.7: newer releases come as the Mac and Windows apps only).
 2. In VirtualBox: **New**, type **Linux**, version **Debian (64-bit)**, and pick the ISO (skip
    unattended installation). Give it **4 GB** of memory (8 GB for bigger models) and 2 or more
    processors. Leave EFI off.
