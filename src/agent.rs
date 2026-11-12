@@ -8,7 +8,7 @@
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -424,6 +424,21 @@ fn chat(
     Ok(from_native(&body))
 }
 
+/// Say hello to a model once, the way a chat would (same context rules), to see whether it runs
+/// here. Returns its short reply and how many seconds it took.
+pub fn test_model(model: &str) -> Result<(String, f64)> {
+    let info = show(model);
+    let started = Instant::now();
+    let messages = [json!({"role": "user", "content": "Say hello in one short sentence."})];
+    let reply = chat(model, false, context_size(&info), &messages, None)?;
+    let text = reply["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    Ok((text, started.elapsed().as_secs_f64()))
+}
+
 /// One message in Ollama's native shape: images as base64, tool call arguments as objects.
 fn to_native(m: &Value) -> Value {
     let mut n = json!({"role": m["role"], "content": ""});
@@ -492,23 +507,15 @@ fn show(model: &str) -> Value {
 /// How many tokens of conversation to give a model: as much as this computer's memory
 /// comfortably holds, never more than the model was made for. An OLLAMA_CONTEXT_LENGTH the user
 /// set themselves wins.
-fn context_size(info: &Value, model_size: Option<u64>) -> Option<u64> {
+fn context_size(info: &Value) -> Option<u64> {
     if std::env::var("OLLAMA_CONTEXT_LENGTH").is_ok_and(|v| !v.trim().is_empty()) {
         return None;
     }
-    let mem = crate::runtime::memory_gb();
-    let mut wanted = match mem {
+    let wanted = match crate::runtime::memory_gb() {
         Some(gb) if gb >= 24 => 32768,
         Some(gb) if gb >= 12 => 16384,
         _ => 8192,
     };
-    // A model that nearly fills memory has no room left for a big context: chats start fine,
-    // then fail with a "Compute error" as they grow. Ask for less so the weights keep the room.
-    if let (Some(gb), Some(size)) = (mem, model_size) {
-        if size as f64 > gb as f64 * 1e9 * 0.5 {
-            wanted = wanted.min(4096);
-        }
-    }
     let trained = info["model_info"]
         .as_object()
         .and_then(|i| {
@@ -731,12 +738,7 @@ pub fn run(o: Opts) -> Result<()> {
             .collect();
         let images = crate::files::image_urls(&root, &attached);
         let info = show(&model);
-        let model_size = crate::models::installed().ok().and_then(|l| {
-            l.iter()
-                .find(|m| m["name"].as_str() == Some(model.as_str()))
-                .and_then(|m| m["size"].as_u64())
-        });
-        let num_ctx = context_size(&info, model_size);
+        let num_ctx = context_size(&info);
         let sees = !images.is_empty() && can_see(&info);
         let text = if attached.is_empty() {
             text
@@ -982,20 +984,8 @@ mod tests {
     #[test]
     fn the_context_never_exceeds_what_the_model_was_made_for() {
         let small = json!({"model_info": {"llama.context_length": 2048}});
-        assert_eq!(context_size(&small, None), Some(2048));
-        assert!(context_size(&Value::Null, None).unwrap() >= 8192);
-    }
-
-    #[test]
-    fn a_model_that_nearly_fills_memory_gets_a_small_context() {
-        // Skipped where the memory size or the user's own setting makes the answer different.
-        let Some(gb) = crate::runtime::memory_gb() else { return };
-        if std::env::var("OLLAMA_CONTEXT_LENGTH").is_ok() {
-            return;
-        }
-        let huge = gb * 1_000_000_000;
-        assert_eq!(context_size(&Value::Null, Some(huge)), Some(4096));
-        assert!(context_size(&Value::Null, Some(1_000_000_000)).unwrap() >= 8192);
+        assert_eq!(context_size(&small), Some(2048));
+        assert!(context_size(&Value::Null).unwrap() >= 8192);
     }
 
     #[test]

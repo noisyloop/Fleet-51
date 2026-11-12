@@ -71,6 +71,52 @@ fn reachable(root: &str) -> bool {
     agent.get(&format!("{root}/api/version")).call().is_ok()
 }
 
+/// The version of the Ollama in use, read from it (e.g. "0.40.6").
+pub fn engine_version() -> Option<String> {
+    let root = root()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(2)))
+        .build()
+        .into();
+    let mut resp = agent.get(&format!("{root}/api/version")).call().ok()?;
+    let v: serde_json::Value = resp.body_mut().read_json().ok()?;
+    v["version"]
+        .as_str()
+        .map(|s| s.trim_start_matches('v').to_string())
+}
+
+/// Whether version `a` is older than `b` ("0.9.1" < "0.40.6"); unparseable parts count as 0.
+pub fn older_than(a: &str, b: &str) -> bool {
+    let parts = |v: &str| -> Vec<u64> {
+        v.trim_start_matches('v')
+            .split(['.', '-', '+'])
+            .map(|p| p.parse().unwrap_or(0))
+            .collect()
+    };
+    let (mut x, mut y) = (parts(a), parts(b));
+    let n = x.len().max(y.len());
+    x.resize(n, 0);
+    y.resize(n, 0);
+    x < y
+}
+
+/// Where the engine writes its log, if that file exists: the one Fleet-51 started, else the
+/// log of the Ollama the user installed.
+pub fn engine_log() -> Option<PathBuf> {
+    let managed = Home::resolve().root.join("runtime").join("ollama.log");
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("Ollama").join("server.log"));
+    [
+        Some(managed),
+        home.map(|h| h.join(".ollama").join("logs").join("server.log")),
+        local,
+    ]
+    .into_iter()
+    .flatten()
+    .find(|p| p.is_file())
+}
+
 fn system_root() -> String {
     let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "127.0.0.1:11434".into());
     let host = if host.starts_with("http") {
@@ -335,6 +381,14 @@ fn read_memory_gb() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn versions_compare_by_number_not_text() {
+        assert!(super::older_than("0.9.1", "0.40.6"));
+        assert!(super::older_than("v0.40.5", "0.40.6"));
+        assert!(!super::older_than("0.40.6", "v0.40.6"));
+        assert!(!super::older_than("1.0", "0.40.6"));
+    }
+
     use super::*;
 
     /// The real thing, from GitHub: `cargo test -- --ignored` after changing OLLAMA_VERSION.

@@ -66,6 +66,7 @@ pub fn router(d: Arc<Daemon>) -> Router {
         .route("/api/models/pull", post(pull_model))
         .route("/api/models/cancel", post(cancel_pull))
         .route("/api/models/delete", post(delete_model))
+        .route("/api/models/test", post(test_model))
         .route("/api/bots", get(list_bots).post(create_bot))
         .route("/api/bots/{id}/messages", get(history).post(send))
         .route("/api/bots/{id}/model", post(bot_model))
@@ -189,8 +190,19 @@ async fn health(State(d): D) -> Json<Value> {
 
 async fn runtime(State(d): D) -> Json<Value> {
     let r = d.runtime.lock().unwrap().clone();
+    let (ollama_version, ollama_log) = tokio::task::spawn_blocking(|| {
+        (
+            crate::runtime::engine_version(),
+            crate::runtime::engine_log().map(|p| p.display().to_string()),
+        )
+    })
+    .await
+    .unwrap_or_default();
+    let ollama_older = ollama_version
+        .as_deref()
+        .is_some_and(|v| crate::runtime::older_than(v, crate::runtime::OLLAMA_VERSION));
     Json(
-        json!({"runtime": r, "build": crate::daemon::running_build(), "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "sandbox": crate::sandbox::available().is_some(), "run_code": crate::sandbox::for_code().is_some(), "default_model": crate::runtime::DEFAULT_MODEL, "memory_gb": crate::runtime::memory_gb(), "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
+        json!({"version": env!("CARGO_PKG_VERSION"), "ollama_version": ollama_version, "ollama_log": ollama_log, "ollama_older": ollama_older, "ollama_tested": crate::runtime::OLLAMA_VERSION.trim_start_matches('v'), "runtime": r, "build": crate::daemon::running_build(), "online": d.online.load(std::sync::atomic::Ordering::SeqCst), "sandbox": crate::sandbox::available().is_some(), "run_code": crate::sandbox::for_code().is_some(), "default_model": crate::runtime::DEFAULT_MODEL, "memory_gb": crate::runtime::memory_gb(), "shapes": BOT_SHAPES, "colors": BOT_COLORS}),
     )
 }
 
@@ -442,6 +454,16 @@ async fn pull_model(State(d): D, Json(m): Json<ModelName>) -> R<Value> {
 async fn cancel_pull(State(d): D, Json(m): Json<ModelName>) -> Json<Value> {
     d.cancel_pull(m.name.trim());
     Json(json!({"cancelling": m.name.trim()}))
+}
+
+async fn test_model(Json(m): Json<ModelName>) -> R<Value> {
+    if !crate::models::valid_name(&m.name) {
+        return Err(anyhow::anyhow!("not a valid model name").into());
+    }
+    let name = m.name.clone();
+    let (reply, secs) =
+        tokio::task::spawn_blocking(move || crate::agent::test_model(&name)).await??;
+    Ok(Json(json!({"ok": true, "reply": reply, "seconds": secs})))
 }
 
 async fn delete_model(Json(m): Json<ModelName>) -> R<Value> {

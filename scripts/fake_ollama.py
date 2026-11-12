@@ -22,6 +22,8 @@ DEMO_REPLIES = [
 MODELS = {"qwen3:1.7b": 1107409472, "qwen3:0.6b": 396705472, "gemma4:e4b": 9600000000}
 # FAKE_NO_MODELS=1: a fresh install with nothing downloaded yet (for looking at first-run setup).
 NO_MODELS = os.environ.get("FAKE_NO_MODELS") == "1"
+# Team troubles already played once (see /api/chat).
+ONCE = set()
 if NO_MODELS:
     MODELS.clear()
 
@@ -81,6 +83,17 @@ class H(BaseHTTPRequestHandler):
                 self.send({"message": {"role": "assistant", "content": f"I can see {images} image(s). {last['content'][-80:]}"}, "done": True, "done_reason": "stop", "prompt_eval_count": 1, "eval_count": 1})
                 return
             msg = {"role": "assistant", "content": f"Hello from {model}."}
+            # Team turns that go wrong, by a word in the team's goal: "hopeless" always fails,
+            # "flaky" fails once, "quiet" answers with nothing once.
+            text = last["content"] if isinstance(last.get("content"), str) else ""
+            if text.startswith("[Team") and "hopeless" in text:
+                return self.send({"error": "model runner has unexpectedly stopped"}, 500)
+            for word in ("flaky", "quiet"):
+                if text.startswith("[Team") and word in text and word not in ONCE:
+                    ONCE.add(word)
+                    if word == "flaky":
+                        return self.send({"error": "model runner has unexpectedly stopped"}, 500)
+                    return self.send({"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop", "prompt_eval_count": 1, "eval_count": 0})
             if last["role"] == "user" and last["content"].startswith("[Team"):
                 # A team turn: "wrap up" from anyone in the team chat ends it.
                 done = " [DONE]" if "wrap up" in last["content"] else ""

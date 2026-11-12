@@ -67,6 +67,9 @@ pub struct Team {
     /// For each bot, the id of the last message it has been sent (or said).
     #[serde(default)]
     pub seen: HashMap<String, String>,
+    /// The next turn is a second try for a bot whose reply failed or came back empty.
+    #[serde(skip)]
+    pub retrying: bool,
     pub created: u64,
     pub updated: u64,
 }
@@ -98,6 +101,10 @@ struct Turn {
     session: String,
     started: bool,
     texts: Vec<String>,
+    /// What the bot had seen before this turn, to put back if the turn is tried again.
+    seen_before: Option<String>,
+    /// This is already the second try: a failure now stops the team.
+    retried: bool,
 }
 
 pub struct Teams {
@@ -231,6 +238,7 @@ pub fn create(d: &Arc<Daemon>, draft: Draft) -> Result<Team> {
         next: 0,
         messages: vec![],
         seen: HashMap::new(),
+        retrying: false,
         created: now_ms(),
         updated: now_ms(),
     };
@@ -448,6 +456,8 @@ fn advance(d: &Arc<Daemon>, id: &str) {
                 session: s.id.clone(),
                 started: false,
                 texts: vec![],
+                seen_before: t.seen.get(&me).cloned(),
+                retried: std::mem::take(&mut t.retrying),
             },
         );
         if let Some(last) = t.messages.last() {
@@ -482,15 +492,53 @@ fn notify(d: &Daemon, team: &str, title: &str, body: &str) {
 }
 
 /// A bot finished its turn: put its reply in the team chat and hand over to the next bot.
-fn finish(d: &Arc<Daemon>, turn: Turn, ok: bool, summary: Option<String>) {
+/// Whether a turn that went wrong gets a second try: small models fail or say nothing now and
+/// then, and one bad reply shouldn't end the team's work. Only once, and not for a bot that
+/// stopped altogether.
+fn tries_again(turn_retried: bool, ok: bool, text: &str, bot_stopped: bool) -> bool {
+    !turn_retried && !bot_stopped && (!ok || text.trim().is_empty())
+}
+
+fn finish(d: &Arc<Daemon>, turn: Turn, ok: bool, summary: Option<String>, bot_stopped: bool) {
     // A bot is its session: the ids are the same.
     let bot = turn.session.clone();
     let name = bot_name(d, &bot);
     let text = turn.texts.join("\n\n");
     let mut done = None;
     let _ = with_team(d, &turn.team, |t| {
-        if t.current.as_deref() == Some(bot.as_str()) {
+        let mine = t.current.as_deref() == Some(bot.as_str());
+        if mine {
             t.current = None;
+        }
+        if mine
+            && t.status == TeamStatus::Running
+            && tries_again(turn.retried, ok, &text, bot_stopped)
+        {
+            // Hand the same turn back to the same bot, as if it had not been taken.
+            match &turn.seen_before {
+                Some(id) => t.seen.insert(bot.clone(), id.clone()),
+                None => t.seen.remove(&bot),
+            };
+            if let Some(i) = t.members.iter().position(|m| m == &bot) {
+                t.next = i;
+            }
+            t.turns = t.turns.saturating_sub(1);
+            t.retrying = true;
+            let why = if ok {
+                "sent an empty reply".to_string()
+            } else {
+                format!(
+                    "could not reply ({})",
+                    summary.clone().unwrap_or_else(|| "the reply failed".into())
+                )
+            };
+            push(
+                t,
+                "system",
+                "Fleet-51",
+                &format!("{name} {why}. Trying once more."),
+            );
+            return Ok(());
         }
         if !ok {
             let why = summary.unwrap_or_else(|| "the reply failed".into());
@@ -576,7 +624,7 @@ fn watch(d: &Arc<Daemon>, live: Live) {
             let Some(k) = key() else { return };
             let r = turns.remove(&k).expect("present");
             drop(turns);
-            finish(d, r, ok, summary);
+            finish(d, r, ok, summary, false);
         }
         // The bot stopped (deleted, or its process ended) in the middle of its turn.
         Ev::Exited { .. } => {
@@ -588,7 +636,7 @@ fn watch(d: &Arc<Daemon>, live: Live) {
             let rs: Vec<Turn> = gone.iter().filter_map(|k| turns.remove(k)).collect();
             drop(turns);
             for r in rs {
-                finish(d, r, false, Some("the bot stopped".into()));
+                finish(d, r, false, Some("the bot stopped".into()), true);
             }
         }
         _ => {}
@@ -629,6 +677,7 @@ mod tests {
             next: 0,
             messages: vec![],
             seen: HashMap::new(),
+            retrying: false,
             created: 0,
             updated: 0,
         }
@@ -675,6 +724,18 @@ mod tests {
             "{pa}"
         );
         assert!(pa.ends_with("Your turn, Ada."));
+    }
+
+    #[test]
+    fn a_failed_or_empty_turn_is_tried_once_more() {
+        assert!(tries_again(false, false, "", false), "a failed reply");
+        assert!(tries_again(false, true, "  \n", false), "an empty reply");
+        assert!(!tries_again(false, true, "Here is my part.", false));
+        assert!(!tries_again(true, false, "", false), "only one more try");
+        assert!(
+            !tries_again(false, false, "", true),
+            "not when the bot stopped"
+        );
     }
 
     #[test]

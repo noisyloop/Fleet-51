@@ -112,6 +112,7 @@ let bots = [];
 // A window opened for one bot ("Open in new window") starts on that bot.
 let current = new URLSearchParams(location.search).get('bot') || store.get('bot', null);
 let installed = [];
+let engine = {}; // version of Fleet-51 and of the engine, and where the engine's log is
 let suggested = [];
 const pulls = new Map();
 let runtime = { state: 'checking' };
@@ -371,7 +372,7 @@ async function undo(id, btn) {
 }
 function friendlyError(msg) {
   if (/not found|pull/i.test(msg)) return `This model isn't downloaded yet. Pick another from the menu above, or download it in Models. (${msg})`;
-  if (/compute error|llama-server/i.test(msg)) return `The model engine failed while running this model. Models from Hugging Face sometimes don't work with the engine; try a smaller size (quantization) or another model. (${msg})`;
+  if (/compute error|llama-server/i.test(msg)) return `The model engine failed while running this model. It is often too big for this computer's memory, or newer than your Ollama; try a smaller size (quantization), another model, or update Ollama.${engine.log ? ` Details: ${engine.log}` : ''} (${msg})`;
   if (/lost contact|cannot reach|connection/i.test(msg)) return `The model engine is not responding. It may still be starting, or this model crashed it. (${msg})`;
   return msg;
 }
@@ -476,10 +477,29 @@ function pct(p) { return p.total ? Math.floor((p.completed * 100) / p.total) : 0
 const gb = (b) => `${(b / 1e9).toFixed(1)} GB`;
 // Would a download of this size leave enough free space? Unknown sizes are checked as they download.
 function fits(bytes) { return bytes == null || freeBytes == null || bytes + keepFree <= freeBytes; }
+// What is running and where to look when something fails; the total makes cleaning up easy.
+function engineFooter() {
+  const used = installed.filter((m) => !m.cloud).reduce((n, m) => n + (m.size || 0), 0);
+  const bits = [`Fleet-51 ${engine.version || ''}${build ? ` (build ${String(build).slice(0, 8)})` : ''}`.trim(), engine.ollama ? `engine (Ollama) ${engine.ollama}` : null, installed.length ? `models use ${gb(used)}` : null].filter(Boolean);
+  return el('div', { class: 'model-list' }, el('h3', { text: 'About' }),
+    engine.older ? el('div', { class: 'offline-note', text: `Your Ollama (${engine.ollama}) is older than ${engine.tested}, the version Fleet-51 is tested with. Newer models, especially ones that see images, may fail to run. Update Ollama, then restart Fleet-51.` }) : null,
+    el('div', { class: 'muted', text: bits.join(' · ') }),
+    engine.log ? el('div', { class: 'muted', text: `Engine log (open it when a model fails): ${engine.log}` }) : null);
+}
 // A model much bigger than this computer's memory tends to fail while chatting (a "Compute error"),
 // or crawl. Only a warning: a graphics card with its own memory can run bigger ones.
 function heavy(bytes) { return bytes != null && memoryGb != null && bytes > memoryGb * 1e9 * 0.75; }
 const HEAVY_NOTE = () => `may be too big for this computer's ${memoryGb} GB of memory`;
+async function testModel(m, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  try {
+    const r = await api('/api/models/test', { name: m.name });
+    toast(`${m.name} works here: “${(r.reply || '(no words)').slice(0, 80)}” in ${r.seconds.toFixed(1)}s`);
+  } catch (e) { toast(`${m.name} failed: ${friendlyError(e.message)}`); }
+  btn.disabled = false;
+  btn.textContent = 'Test';
+}
 async function deleteModel(m) {
   const size = m.cloud ? '' : ` This frees ${(m.size / 1e9).toFixed(1)} GB; you can download it again later.`;
   if (!confirm(`Delete the model ${m.name}?${size}`)) return;
@@ -544,7 +564,7 @@ function renderModelsDialog() {
     online ? null : el('div', { class: 'offline-note', text: "You're offline. Your downloaded models still work; downloading new ones needs the internet." }),
     byName,
     el('div', { class: 'model-list' }, el('h3', { text: 'On this computer' }),
-      mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.name.startsWith('hf.co/') ? ' · from Hugging Face' : ''}${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}${!m.cloud && heavy(m.size) ? ` · ${HEAVY_NOTE()}` : ''}`, bot() && bot().model === m.name ? el('span', { class: 'muted', text: 'in use' }) : el('button', { type: 'button', class: 'pill', onclick: () => deleteModel(m) }, 'Delete'))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
+      mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.name.startsWith('hf.co/') ? ' · from Hugging Face' : ''}${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}${!m.cloud && heavy(m.size) ? ` · ${HEAVY_NOTE()}` : ''}`, el('span', {}, m.cloud ? null : el('button', { type: 'button', class: 'pill', title: 'Say hello to this model to see whether it runs on this computer', onclick: (e) => testModel(m, e.currentTarget) }, 'Test'), ' ', bot() && bot().model === m.name ? el('span', { class: 'muted', text: 'in use' }) : el('button', { type: 'button', class: 'pill', onclick: () => deleteModel(m) }, 'Delete')))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
     el('div', { class: 'model-list' }, el('h3', { text: 'Free models to download' }),
       freeBytes != null ? el('div', { class: 'muted', text: `${gb(freeBytes)} free on this computer.` }) : null,
       shown.length ? shown.map((s) => {
@@ -556,6 +576,7 @@ function renderModelsDialog() {
           : el('button', { type: 'button', class: 'pill', disabled: !online || !ok, onclick: () => download(s.name) }, ok ? 'Download' : 'Too big'));
       }) : el('div', { class: 'muted', text: q ? 'No suggested model matches.' : 'You have them all.' })),
     hfSection(),
+    engineFooter(),
     hf ? null : el('a', { class: 'browse', href: `https://ollama.com/search${q ? '?q=' + encodeURIComponent(modelQuery) : ''}`, target: '_blank', rel: 'noopener' }, `Browse all models on ollama.com${q ? ` for “${modelQuery}”` : ''} ↗`),
     el('a', { class: 'browse', href: `https://huggingface.co/models?library=gguf${q && !hf ? '&search=' + encodeURIComponent(modelQuery) : ''}`, target: '_blank', rel: 'noopener' }, 'Browse GGUF models on Hugging Face ↗')].filter(Boolean));
 }
@@ -1027,6 +1048,7 @@ async function boot() {
     const r = await api('/api/runtime');
     runtime = r.runtime;
     build = r.build;
+    engine = { version: r.version, ollama: r.ollama_version, older: !!r.ollama_older, tested: r.ollama_tested, log: r.ollama_log };
     defaultModel = r.default_model;
     setOnline(r.online !== false);
     memoryGb = r.memory_gb;
