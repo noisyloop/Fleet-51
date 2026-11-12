@@ -1009,7 +1009,9 @@ mod tests {
     #[test]
     fn a_model_that_nearly_fills_memory_gets_a_small_context() {
         // Skipped where the memory size or the user's own setting makes the answer different.
-        let Some(gb) = crate::runtime::memory_gb() else { return };
+        let Some(gb) = crate::runtime::memory_gb() else {
+            return;
+        };
         if std::env::var("OLLAMA_CONTEXT_LENGTH").is_ok() {
             return;
         }

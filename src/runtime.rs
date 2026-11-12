@@ -80,7 +80,9 @@ pub fn engine_version() -> Option<String> {
         .into();
     let mut resp = agent.get(&format!("{root}/api/version")).call().ok()?;
     let v: serde_json::Value = resp.body_mut().read_json().ok()?;
-    v["version"].as_str().map(|s| s.trim_start_matches('v').to_string())
+    v["version"]
+        .as_str()
+        .map(|s| s.trim_start_matches('v').to_string())
 }
 
 /// Whether version `a` is older than `b` ("0.9.1" < "0.40.6"); unparseable parts count as 0.
@@ -103,11 +105,16 @@ pub fn older_than(a: &str, b: &str) -> bool {
 pub fn engine_log() -> Option<PathBuf> {
     let managed = Home::resolve().root.join("runtime").join("ollama.log");
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let local = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Ollama").join("server.log"));
-    [Some(managed), home.map(|h| h.join(".ollama").join("logs").join("server.log")), local]
-        .into_iter()
-        .flatten()
-        .find(|p| p.is_file())
+    let local = std::env::var_os("LOCALAPPDATA")
+        .map(|d| PathBuf::from(d).join("Ollama").join("server.log"));
+    [
+        Some(managed),
+        home.map(|h| h.join(".ollama").join("logs").join("server.log")),
+        local,
+    ]
+    .into_iter()
+    .flatten()
+    .find(|p| p.is_file())
 }
 
 fn system_root() -> String {
