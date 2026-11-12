@@ -13,12 +13,35 @@ on:
       iso:
         description: "Also build the bootable ISO (slow)"
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
 
 jobs:
+  # Whether this build publishes a release: a version tag, or main with a version not released
+  # yet. Only then is the (slow) ISO built, unless a manual run asks for it.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE=false
+          if [ "${{ github.event_name }}" = push ] && [ "${{ startsWith(github.ref, 'refs/tags/') }}" = true ]; then
+            RELEASE=true
+          elif [ "${{ github.event_name }}" = push ] && [ "${{ github.ref }}" = refs/heads/main ]; then
+            VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+            gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || RELEASE=true
+          fi
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+          echo "Publishes a release: $RELEASE"
+
   test:
     name: Test (Linux)
     runs-on: ubuntu-latest
@@ -237,8 +260,9 @@ jobs:
 
   iso:
     name: Bootable ISO (x86-64, for VirtualBox)
-    # A run started by hand can leave it out; pushes and releases always build it.
-    if: github.event_name != 'workflow_dispatch' || inputs.iso
+    # Only for a release, or when a run started by hand asks for it.
+    needs: plan
+    if: needs.plan.outputs.release == 'true' || (github.event_name == 'workflow_dispatch' && inputs.iso)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -294,8 +318,11 @@ jobs:
 
   release:
     name: Release
-    needs: [test, macos, windows, iso]
-    if: github.event_name == 'push'
+    needs: [plan, test, macos, windows, iso]
+    # Runs when everything else passed; the ISO is only built (and so only required) for a release.
+    if: >-
+      always() && github.event_name == 'push' && !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled') && (needs.iso.result == 'success' || needs.plan.outputs.release != 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
