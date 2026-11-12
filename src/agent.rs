@@ -492,15 +492,23 @@ fn show(model: &str) -> Value {
 /// How many tokens of conversation to give a model: as much as this computer's memory
 /// comfortably holds, never more than the model was made for. An OLLAMA_CONTEXT_LENGTH the user
 /// set themselves wins.
-fn context_size(info: &Value) -> Option<u64> {
+fn context_size(info: &Value, model_size: Option<u64>) -> Option<u64> {
     if std::env::var("OLLAMA_CONTEXT_LENGTH").is_ok_and(|v| !v.trim().is_empty()) {
         return None;
     }
-    let wanted = match crate::runtime::memory_gb() {
+    let mem = crate::runtime::memory_gb();
+    let mut wanted = match mem {
         Some(gb) if gb >= 24 => 32768,
         Some(gb) if gb >= 12 => 16384,
         _ => 8192,
     };
+    // A model that nearly fills memory has no room left for a big context: chats start fine,
+    // then fail with a "Compute error" as they grow. Ask for less so the weights keep the room.
+    if let (Some(gb), Some(size)) = (mem, model_size) {
+        if size as f64 > gb as f64 * 1e9 * 0.5 {
+            wanted = wanted.min(4096);
+        }
+    }
     let trained = info["model_info"]
         .as_object()
         .and_then(|i| {
@@ -723,7 +731,12 @@ pub fn run(o: Opts) -> Result<()> {
             .collect();
         let images = crate::files::image_urls(&root, &attached);
         let info = show(&model);
-        let num_ctx = context_size(&info);
+        let model_size = crate::models::installed().ok().and_then(|l| {
+            l.iter()
+                .find(|m| m["name"].as_str() == Some(model.as_str()))
+                .and_then(|m| m["size"].as_u64())
+        });
+        let num_ctx = context_size(&info, model_size);
         let sees = !images.is_empty() && can_see(&info);
         let text = if attached.is_empty() {
             text
