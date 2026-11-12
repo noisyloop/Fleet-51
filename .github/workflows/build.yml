@@ -38,7 +38,8 @@ jobs:
 
   macos:
     name: macOS app (.dmg)
-    runs-on: macos-14
+    # macos-14 was retired by GitHub (its jobs are cancelled before they start).
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Add both Mac targets
