@@ -476,6 +476,17 @@ function pct(p) { return p.total ? Math.floor((p.completed * 100) / p.total) : 0
 const gb = (b) => `${(b / 1e9).toFixed(1)} GB`;
 // Would a download of this size leave enough free space? Unknown sizes are checked as they download.
 function fits(bytes) { return bytes == null || freeBytes == null || bytes + keepFree <= freeBytes; }
+async function deleteModel(m) {
+  const size = m.cloud ? '' : ` This frees ${(m.size / 1e9).toFixed(1)} GB; you can download it again later.`;
+  if (!confirm(`Delete the model ${m.name}?${size}`)) return;
+  try {
+    await api('/api/models/delete', { name: m.name });
+    installed = installed.filter((x) => x.name !== m.name);
+    renderModelsDialog();
+    toast(`Deleted ${m.name}`);
+    loadModels();
+  } catch (e) { toast(e.message); }
+}
 async function loadModels() {
   try {
     const m = await api('/api/models');
@@ -529,7 +540,7 @@ function renderModelsDialog() {
     online ? null : el('div', { class: 'offline-note', text: "You're offline. Your downloaded models still work; downloading new ones needs the internet." }),
     byName,
     el('div', { class: 'model-list' }, el('h3', { text: 'On this computer' }),
-      mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.name.startsWith('hf.co/') ? ' · from Hugging Face' : ''}${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}`, el('span', { class: 'muted', text: bot() && bot().model === m.name ? 'in use' : '' }))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
+      mine.length ? mine.map((m) => row(m.name, m.cloud ? CLOUD_NOTE : `${(m.size / 1e9).toFixed(1)} GB${m.name.startsWith('hf.co/') ? ' · from Hugging Face' : ''}${m.vision ? ' · sees images' : ''}${m.tools === false ? ' · limited tool use' : ''}`, bot() && bot().model === m.name ? el('span', { class: 'muted', text: 'in use' }) : el('button', { type: 'button', class: 'pill', onclick: () => deleteModel(m) }, 'Delete'))) : el('div', { class: 'muted', text: q && installed.length ? 'No downloaded model matches.' : 'None yet.' })),
     el('div', { class: 'model-list' }, el('h3', { text: 'Free models to download' }),
       freeBytes != null ? el('div', { class: 'muted', text: `${gb(freeBytes)} free on this computer.` }) : null,
       shown.length ? shown.map((s) => {
